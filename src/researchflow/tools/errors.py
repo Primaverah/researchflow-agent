@@ -50,5 +50,13 @@ class ToolExecutionError(ToolError):
         super().__init__(message)
 
 
+class ToolFailure(ToolError):
+    """Signal an expected operational failure from a concrete tool."""
+
+    def __init__(self, message: str, *, error_type: str = "tool_failure") -> None:
+        self.error_type = error_type
+        super().__init__(message)
+
+
 class UnsafePathError(ToolError):
     """Raised when a requested path escapes its allowed root."""

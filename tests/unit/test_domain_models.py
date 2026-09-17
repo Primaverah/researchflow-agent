@@ -15,7 +15,6 @@ from researchflow.domain import (
     ResearchPlan,
     ToolCall,
     ToolResult,
-    ToolResultStatus,
 )
 
 
@@ -24,6 +23,25 @@ def test_research_plan_requires_unique_steps() -> None:
 
     with pytest.raises(ValidationError, match="step_id values must be unique"):
         ResearchPlan(plan_id="plan-1", goal="Research tools", steps=[step, step])
+
+
+def test_research_plan_rejects_empty_steps() -> None:
+    with pytest.raises(ValidationError):
+        ResearchPlan(plan_id="plan-1", goal="Research tools", steps=[])
+
+
+def test_research_plan_accepts_at_least_one_step() -> None:
+    step = PlanStep(step_id="search", description="Search documents")
+
+    plan = ResearchPlan(plan_id="plan-1", goal="Research tools", steps=[step])
+
+    assert plan.steps == [step]
+
+
+@pytest.mark.parametrize("tool_name", ["", " ", "UPPER", "has space", "bang!"])
+def test_tool_call_rejects_invalid_tool_names(tool_name: str) -> None:
+    with pytest.raises(ValidationError):
+        ToolCall(call_id="call-1", tool_name=tool_name, arguments={})
 
 
 def test_models_reject_unknown_fields() -> None:
@@ -57,8 +75,36 @@ def test_failed_tool_result_requires_error_details() -> None:
         ToolResult(
             call_id="call-1",
             tool_name="example",
-            status=ToolResultStatus.FAILED,
+            success=False,
         )
+
+
+def test_domain_models_serialize_and_deserialize() -> None:
+    plan = ResearchPlan(
+        plan_id="plan-1",
+        goal="Research tools",
+        steps=[PlanStep(step_id="step-1", description="Search")],
+    )
+    state = AgentState(
+        run_id="run-1",
+        query="Research tools",
+        plan=plan,
+        tool_calls=[
+            ToolCall(call_id="call-1", tool_name="example_tool", arguments={"n": 1})
+        ],
+        tool_results=[
+            ToolResult(
+                call_id="call-1",
+                tool_name="example_tool",
+                success=True,
+                output={"answer": 2},
+            )
+        ],
+    )
+
+    restored = AgentState.model_validate_json(state.model_dump_json())
+
+    assert restored == state
 
 
 def test_execution_trace_rejects_negative_duration() -> None:
