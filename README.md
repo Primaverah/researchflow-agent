@@ -41,6 +41,40 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
+### Offline tools
+
+The offline tools use separate document and output roots and can be registered in
+the shared tool registry:
+
+```python
+from pathlib import Path
+
+from researchflow.domain import ToolCall
+from researchflow.tools import ToolContext, ToolRegistry
+from researchflow.tools.offline import create_offline_tools
+
+notes = Path("notes")
+notes.mkdir(exist_ok=True)
+context = ToolContext(
+    working_directory=Path("examples/documents"),
+    output_directory=notes,
+    run_id="example-run",
+)
+registry = ToolRegistry()
+for tool in create_offline_tools(context):
+    registry.register(tool)
+
+result = registry.get("search_documents").execute(
+    ToolCall(
+        call_id="search-1",
+        tool_name="search_documents",
+        arguments={"query": "工具调用", "limit": 5},
+    ),
+    context,
+)
+print(result.output)
+```
+
 ## License
 
 MIT
