@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from researchflow.domain import ToolCall, ToolResult, ToolResultStatus
+from researchflow.domain import ToolCall, ToolResult
 from researchflow.tools import ToolContext, ToolRegistry
 from researchflow.tools.offline import create_offline_tools
 
@@ -142,7 +142,7 @@ def test_read_document_returns_stable_failures(
 
     result = execute(tools["read_document"], context, {"path": path})
 
-    assert result.status is ToolResultStatus.FAILED
+    assert result.success is False
     assert result.error_type == error_type
     assert str(context.working_directory) not in result.error_message
 
@@ -192,9 +192,9 @@ def test_save_note_supports_chinese_nested_paths_and_overwrite(
     )
 
     assert created.output == {"path": "研究/笔记.md", "char_count": 8}
-    assert rejected.status is ToolResultStatus.FAILED
+    assert rejected.success is False
     assert rejected.error_type == "note_exists"
-    assert overwritten.status is ToolResultStatus.SUCCEEDED
+    assert overwritten.success is True
     assert target.read_text(encoding="utf-8") == "新内容"
 
 
@@ -207,7 +207,7 @@ def test_save_rejects_path_traversal(offline_environment, path: str) -> None:
 
     result = execute(tools["save_note"], context, {"path": path, "content": "x"})
 
-    assert result.status is ToolResultStatus.FAILED
+    assert result.success is False
     assert result.error_type == "unsafe_path"
 
 
@@ -248,7 +248,7 @@ def test_failed_atomic_save_removes_temporary_files(
         tools["save_note"], context, {"path": "note.md", "content": "内容"}
     )
 
-    assert result.status is ToolResultStatus.FAILED
+    assert result.success is False
     assert result.error_type == "write_failed"
     assert not (context.output_directory / "note.md").exists()
     assert list(context.output_directory.iterdir()) == []

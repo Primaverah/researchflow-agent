@@ -51,9 +51,9 @@ class ToolExecutionError(ToolError):
 
 
 class ToolFailure(ToolError):
-    """An expected tool failure that can be returned as a structured result."""
+    """Signal an expected operational failure from a concrete tool."""
 
-    def __init__(self, error_type: str, message: str) -> None:
+    def __init__(self, message: str, *, error_type: str = "tool_failure") -> None:
         self.error_type = error_type
         super().__init__(message)
 

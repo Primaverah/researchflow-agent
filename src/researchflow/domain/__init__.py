@@ -9,8 +9,8 @@ from researchflow.domain.models import (
     PlanStepStatus,
     ResearchPlan,
     ToolCall,
+    ToolName,
     ToolResult,
-    ToolResultStatus,
 )
 
 __all__ = [
@@ -22,6 +22,6 @@ __all__ = [
     "PlanStepStatus",
     "ResearchPlan",
     "ToolCall",
+    "ToolName",
     "ToolResult",
-    "ToolResultStatus",
 ]

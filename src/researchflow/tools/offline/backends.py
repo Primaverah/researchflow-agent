@@ -20,7 +20,8 @@ def _normalize(text: str) -> str:
 def _validate_suffix(path: str) -> None:
     if Path(path).suffix.casefold() not in SUPPORTED_SUFFIXES:
         raise ToolFailure(
-            "unsupported_file_type", "only .md and .txt files are supported"
+            "only .md and .txt files are supported",
+            error_type="unsupported_file_type",
         )
 
 
@@ -60,22 +61,25 @@ class FileSystemDocumentSource:
             safe_path = resolve_safe_path(self._root, path)
         except UnsafePathError as exc:
             raise ToolFailure(
-                "unsafe_path", "document path is outside the allowed root"
+                "document path is outside the allowed root",
+                error_type="unsafe_path",
             ) from exc
         _validate_suffix(path)
         if not safe_path.exists():
-            raise ToolFailure("document_not_found", "document does not exist")
+            raise ToolFailure(
+                "document does not exist", error_type="document_not_found"
+            )
         if not safe_path.is_file():
-            raise ToolFailure("not_a_file", "document path is not a file")
+            raise ToolFailure("document path is not a file", error_type="not_a_file")
         try:
             content = safe_path.read_text(encoding="utf-8")
         except UnicodeDecodeError as exc:
             raise ToolFailure(
-                "invalid_encoding", "document is not valid UTF-8"
+                "document is not valid UTF-8", error_type="invalid_encoding"
             ) from exc
         except OSError as exc:
             raise ToolFailure(
-                "document_not_found", "document could not be read"
+                "document could not be read", error_type="document_not_found"
             ) from exc
         relative_path = safe_path.relative_to(self._root.resolve()).as_posix()
         return Document(
@@ -159,13 +163,13 @@ class FileSystemNoteStore:
             target = resolve_safe_path(self._root, path)
         except UnsafePathError as exc:
             raise ToolFailure(
-                "unsafe_path", "note path is outside the allowed root"
+                "note path is outside the allowed root", error_type="unsafe_path"
             ) from exc
         _validate_suffix(path)
         if target.exists() and target.is_dir():
-            raise ToolFailure("not_a_file", "note path is a directory")
+            raise ToolFailure("note path is a directory", error_type="not_a_file")
         if target.exists() and not overwrite:
-            raise ToolFailure("note_exists", "note already exists")
+            raise ToolFailure("note already exists", error_type="note_exists")
 
         temporary_path: Path | None = None
         try:
@@ -184,10 +188,12 @@ class FileSystemNoteStore:
             os.replace(temporary_path, verified_target)
         except UnsafePathError as exc:
             raise ToolFailure(
-                "unsafe_path", "note path is outside the allowed root"
+                "note path is outside the allowed root", error_type="unsafe_path"
             ) from exc
         except OSError as exc:
-            raise ToolFailure("write_failed", "note could not be saved") from exc
+            raise ToolFailure(
+                "note could not be saved", error_type="write_failed"
+            ) from exc
         finally:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)

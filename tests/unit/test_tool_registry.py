@@ -43,17 +43,26 @@ def test_register_get_and_list_tools() -> None:
 
 def test_duplicate_tool_name_is_rejected() -> None:
     registry = ToolRegistry()
-    registry.register(AlphaTool())
+    original = AlphaTool()
+    registry.register(original)
 
     with pytest.raises(DuplicateToolError, match="alpha"):
         registry.register(AlphaTool())
 
+    assert registry.get("alpha") is original
+    assert registry.list_tools() == (original,)
+
 
 def test_unknown_tool_is_rejected() -> None:
     registry = ToolRegistry()
+    original = AlphaTool()
+    registry.register(original)
 
     with pytest.raises(ToolNotFoundError, match="missing"):
         registry.get("missing")
+
+    assert registry.get("alpha") is original
+    assert registry.list_tools() == (original,)
 
 
 def test_registry_rejects_non_tools() -> None:

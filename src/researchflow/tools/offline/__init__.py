@@ -11,17 +11,19 @@ from researchflow.tools.offline.interfaces import (
     NoteStore,
     SearchBackend,
 )
-from researchflow.tools.offline.tools import (
+from researchflow.tools.offline.models import (
     ReadDocumentArgs,
     ReadDocumentOutput,
-    ReadDocumentTool,
     SaveNoteArgs,
     SaveNoteOutput,
-    SaveNoteTool,
     SearchDocumentsArgs,
     SearchDocumentsOutput,
-    SearchDocumentsTool,
     SearchHitOutput,
+)
+from researchflow.tools.offline.tools import (
+    ReadDocumentTool,
+    SaveNoteTool,
+    SearchDocumentsTool,
 )
 
 __all__ = [

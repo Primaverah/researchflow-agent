@@ -14,6 +14,7 @@ from pydantic import (
 )
 
 NonEmptyString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+ToolName = Annotated[str, StringConstraints(min_length=1, pattern=r"^[a-z0-9_]+$")]
 
 
 def utc_now() -> datetime:
@@ -35,13 +36,6 @@ class PlanStepStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
-
-
-class ToolResultStatus(StrEnum):
-    """Possible outcomes of a tool call."""
-
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
 
 
 class ExecutionStatus(StrEnum):
@@ -102,7 +96,7 @@ class ToolCall(DomainModel):
     """A request to invoke one registered tool."""
 
     call_id: NonEmptyString
-    tool_name: NonEmptyString
+    tool_name: ToolName
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -110,8 +104,8 @@ class ToolResult(DomainModel):
     """The normalized result of one tool invocation."""
 
     call_id: NonEmptyString
-    tool_name: NonEmptyString
-    status: ToolResultStatus
+    tool_name: ToolName
+    success: bool
     output: Any | None = None
     error_type: NonEmptyString | None = None
     error_message: NonEmptyString | None = None
@@ -123,9 +117,9 @@ class ToolResult(DomainModel):
             self.error_type is not None and self.error_message is not None
         )
         has_any_error = self.error_type is not None or self.error_message is not None
-        if self.status is ToolResultStatus.FAILED and not has_complete_error:
+        if not self.success and not has_complete_error:
             raise ValueError("failed results require error_type and error_message")
-        if self.status is ToolResultStatus.SUCCEEDED and has_any_error:
+        if self.success and has_any_error:
             raise ValueError("successful results cannot include error details")
         return self
 

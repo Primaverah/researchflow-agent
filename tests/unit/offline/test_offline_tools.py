@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from researchflow.domain import ToolCall, ToolResultStatus
+from researchflow.domain import ToolCall
 from researchflow.tools import ToolContext
 from researchflow.tools.offline import (
     KeywordSearchBackend,
@@ -155,7 +155,7 @@ def test_backend_failure_becomes_structured_result(context: ToolContext) -> None
     )
 
     # The fake accepts every path, proving the tool delegates backend policy.
-    assert result.status is ToolResultStatus.SUCCEEDED
+    assert result.success is True
 
 
 def test_keyword_backend_uses_documented_scoring_weights() -> None:

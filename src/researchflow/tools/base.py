@@ -4,12 +4,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from researchflow.domain import ToolCall, ToolResult, ToolResultStatus
+from researchflow.domain import ToolCall, ToolName, ToolResult
 from researchflow.tools.context import ToolContext
 from researchflow.tools.errors import (
-    ToolError,
     ToolExecutionError,
     ToolFailure,
     ToolValidationError,
@@ -25,10 +24,12 @@ class BaseTool(ABC):
 
     def __init__(self) -> None:
         """Validate the metadata declared by a concrete tool."""
-        if not self.name or not self.name.replace("_", "").isalnum():
-            raise ValueError("tool name must contain letters, numbers, or underscores")
-        if self.name != self.name.lower():
-            raise ValueError("tool name must be lowercase")
+        try:
+            TypeAdapter(ToolName).validate_python(self.name)
+        except ValidationError as exc:
+            raise ValueError(
+                "tool name must contain only lowercase letters, numbers, or underscores"
+            ) from exc
         if not self.description.strip():
             raise ValueError("tool description cannot be empty")
         if not isinstance(self.args_schema, type) or not issubclass(
@@ -58,22 +59,14 @@ class BaseTool(ABC):
             return ToolResult(
                 call_id=call.call_id,
                 tool_name=self.name,
-                status=ToolResultStatus.FAILED,
+                success=False,
                 error_type=exc.error_type,
                 error_message=str(exc),
             )
-        except ToolError:
-            raise
-        except Exception as exc:
-            raise ToolExecutionError(
-                self.name,
-                call.call_id,
-                f"tool '{self.name}' execution failed",
-            ) from exc
         return ToolResult(
             call_id=call.call_id,
             tool_name=self.name,
-            status=ToolResultStatus.SUCCEEDED,
+            success=True,
             output=output,
         )
 
