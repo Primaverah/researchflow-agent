@@ -28,6 +28,19 @@ The project will consist of:
 
 🚧 This project is currently under development.
 
+## Development
+
+ResearchFlow Agent targets Python 3.11 and uses
+[uv](https://docs.astral.sh/uv/) for dependency management.
+
+```bash
+uv sync
+uv run researchflow --help
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+```
+
 ## License
 
 MIT
