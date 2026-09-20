@@ -120,6 +120,69 @@ def test_execution_trace_rejects_negative_duration() -> None:
         )
 
 
+def test_execution_trace_round_trips_chinese_arguments() -> None:
+    trace = ExecutionTrace(
+        trace_id="trace-1",
+        run_id="run-1",
+        call_id="call-1",
+        tool_name="example",
+        arguments={"query": "中文检索"},
+        status=ExecutionStatus.SUCCEEDED,
+        duration_ms=0,
+    )
+
+    restored = ExecutionTrace.model_validate_json(trace.model_dump_json())
+
+    assert restored == trace
+    assert restored.arguments == {"query": "中文检索"}
+
+
+def test_successful_trace_rejects_error_details() -> None:
+    with pytest.raises(ValidationError):
+        ExecutionTrace(
+            trace_id="trace-1",
+            run_id="run-1",
+            call_id="call-1",
+            tool_name="example",
+            arguments={},
+            status=ExecutionStatus.SUCCEEDED,
+            duration_ms=0,
+            error_type="unexpected",
+            error_message="unexpected",
+        )
+
+
+def test_failed_trace_requires_complete_error_details() -> None:
+    with pytest.raises(ValidationError):
+        ExecutionTrace(
+            trace_id="trace-1",
+            run_id="run-1",
+            call_id="call-1",
+            tool_name="example",
+            arguments={},
+            status=ExecutionStatus.FAILED,
+            duration_ms=0,
+            error_type="tool_failure",
+        )
+
+
+def test_failed_trace_accepts_complete_error_details() -> None:
+    trace = ExecutionTrace(
+        trace_id="trace-1",
+        run_id="run-1",
+        call_id="call-1",
+        tool_name="example",
+        arguments={},
+        status=ExecutionStatus.FAILED,
+        duration_ms=0,
+        error_type="tool_failure",
+        error_message="expected failure",
+    )
+
+    assert trace.status is ExecutionStatus.FAILED
+    assert trace.error_type == "tool_failure"
+
+
 def test_agent_state_validates_current_step_and_completion() -> None:
     plan = ResearchPlan(
         plan_id="plan-1",

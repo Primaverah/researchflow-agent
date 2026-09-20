@@ -75,6 +75,33 @@ result = registry.get("search_documents").execute(
 print(result.output)
 ```
 
+### Traced tool execution
+
+`ToolExecutor` is the single synchronous entry point for registered tool calls. It
+returns the existing `ToolResult` and records success, validation failures, missing
+tools, and execution failures through a trace recorder.
+
+```python
+from researchflow.execution import JsonlTraceRecorder, ToolExecutor
+
+executor = ToolExecutor(registry, JsonlTraceRecorder())
+result = executor.execute(
+    ToolCall(
+        call_id="search-2",
+        tool_name="search_documents",
+        arguments={"query": "Agent 安全", "limit": 3},
+    ),
+    context,
+)
+```
+
+The JSONL recorder appends one independently parseable JSON object per line to
+`<output_directory>/traces/<run_id>.jsonl`. For example:
+
+```json
+{"trace_id":"...","run_id":"example-run","call_id":"search-2","tool_name":"search_documents","arguments":{"query":"Agent 安全","limit":3},"status":"succeeded","started_at":"2026-09-20T10:00:00Z","duration_ms":1.25,"error_type":null,"error_message":null}
+```
+
 ## License
 
 MIT
