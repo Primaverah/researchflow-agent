@@ -102,6 +102,27 @@ The JSONL recorder appends one independently parseable JSON object per line to
 {"trace_id":"...","run_id":"example-run","call_id":"search-2","tool_name":"search_documents","arguments":{"query":"Agent 安全","limit":3},"status":"succeeded","started_at":"2026-09-20T10:00:00Z","duration_ms":1.25,"error_type":null,"error_message":null}
 ```
 
+### Rule-driven agent
+
+The current agent is synchronous, offline, and rule-driven. It creates a fixed
+research plan, selects the local search/read/save tools, extracts relevant source
+text, saves a Markdown report, and records every real tool call. It does not use an
+LLM or any network service.
+
+```bash
+uv run researchflow run "tool calling" \
+  --documents-dir examples/documents \
+  --output-dir output \
+  --max-steps 10
+```
+
+Each run writes its report and execution traces below the selected output root:
+
+```text
+output/notes/<run_id>.md
+output/traces/<run_id>.jsonl
+```
+
 ## License
 
 MIT
