@@ -17,6 +17,7 @@ from researchflow.tools import ToolContext, ToolError, ToolNotFoundError, ToolRe
 from researchflow.tools.errors import ToolValidationError
 
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 
 class ToolExecutor:

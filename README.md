@@ -28,6 +28,42 @@ The project will consist of:
 
 🚧 This project is currently under development.
 
+## Quick Start
+
+ResearchFlow Agent is currently a rule-driven, completely offline agent. It does
+not call an LLM or network service and does not require an API key.
+
+Install the locked dependencies, inspect the CLI, and run a first local research
+task:
+
+```bash
+uv sync
+uv run researchflow --help
+uv run researchflow run "tool calling"
+```
+
+By default, the CLI searches `examples/documents` and writes generated files below
+`output`. Run without a question to enter it once interactively:
+
+```bash
+uv run researchflow run
+```
+
+The complete command supports custom directories, a step limit, and concise
+execution details:
+
+```bash
+uv run researchflow run "tool calling" \
+  --documents-dir examples/documents \
+  --output-dir output \
+  --max-steps 10 \
+  --verbose
+```
+
+Each successful run saves its report to `output/notes/<run_id>.md` and its
+line-delimited execution records to `output/traces/<run_id>.jsonl`. The CLI prints
+the actual paths produced by the run.
+
 ## Development
 
 ResearchFlow Agent targets Python 3.11 and uses
