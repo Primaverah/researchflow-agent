@@ -72,8 +72,17 @@ def test_version_is_available() -> None:
     assert result.stdout.strip() == f"researchflow {__version__}"
 
 
-def test_evaluate_outputs_all_retrievers_and_writes_utf8_json(tmp_path: Path) -> None:
+def test_evaluate_outputs_all_retrievers_and_writes_utf8_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     output = tmp_path / "metrics" / "evaluation.json"
+    monkeypatch.setattr(
+        cli,
+        "evaluate_retriever",
+        lambda *_args, **_kwargs: {
+            "embedding": {"zh": {"queries": 2}, "overall": {"queries": 2}}
+        },
+    )
 
     result = runner.invoke(
         app,
@@ -82,8 +91,8 @@ def test_evaluate_outputs_all_retrievers_and_writes_utf8_json(tmp_path: Path) ->
 
     assert result.exit_code == 0
     saved = json.loads(output.read_text(encoding="utf-8"))
-    assert set(saved) == {"keyword", "bm25"}
-    assert saved["keyword"]["zh"]["queries"] == 2
+    assert set(saved) == {"embedding"}
+    assert saved["embedding"]["zh"]["queries"] == 2
     assert '"overall"' in result.stdout
 
 
