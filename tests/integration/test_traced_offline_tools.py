@@ -54,8 +54,15 @@ def test_all_offline_tools_run_through_executor(tmp_path: Path) -> None:
 
     assert search.success and search.output["count"] == 1
     assert read.success and read.output["title"] == "Agent 工具调用"
-    assert save.success and (output / "研究.md").read_text() == "中文研究笔记"
-    lines = (output / "traces" / "offline-run.jsonl").read_text().splitlines()
+    assert (
+        save.success
+        and (output / "研究.md").read_text(encoding="utf-8") == "中文研究笔记"
+    )
+    lines = (
+        (output / "traces" / "offline-run.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
     assert len(lines) == 3
     assert [json.loads(line)["call_id"] for line in lines] == [
         "search-1",
