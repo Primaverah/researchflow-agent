@@ -109,6 +109,13 @@ same-language retrieval: Chinese queries rank Chinese documents and English
 queries rank English documents. The JSON result is written with UTF-8 when
 `--output` is supplied.
 
+Embedding and hybrid baselines are optional. Install the local multilingual
+model runtime with `uv sync --extra embedding`, then run
+`researchflow evaluate --retriever embedding` or `--retriever hybrid`.
+`--embedding-model` selects the sentence-transformers model and is loaded only
+when those retrievers are selected. Hybrid retrieval combines BM25 and embedding
+rankings with reciprocal-rank fusion; it remains same-language only.
+
 Run with a positional research question:
 
 ```bash

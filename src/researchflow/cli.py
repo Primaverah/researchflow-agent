@@ -171,11 +171,18 @@ def evaluate(
         Path | None,
         typer.Option("--output", help="Optional UTF-8 JSON result path."),
     ] = None,
+    embedding_model: Annotated[
+        str,
+        typer.Option("--embedding-model", help="Local multilingual embedding model."),
+    ] = "paraphrase-multilingual-MiniLM-L12-v2",
 ) -> None:
     """Evaluate keyword and BM25 retrieval on the bilingual baseline."""
-    if retriever not in {"keyword", "bm25", "all"}:
-        _input_error("--retriever 必须为 keyword、bm25 或 all")
-    result = evaluate_retriever(retriever)
+    if retriever not in {"keyword", "bm25", "embedding", "hybrid", "all"}:
+        _input_error("--retriever 必须为 keyword、bm25、embedding、hybrid 或 all")
+    try:
+        result = evaluate_retriever(retriever, model_name=embedding_model)
+    except RuntimeError as exc:
+        _input_error(str(exc))
     rendered = json.dumps(result, ensure_ascii=False, indent=2)
     if output is not None:
         try:

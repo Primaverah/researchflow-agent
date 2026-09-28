@@ -15,6 +15,11 @@ dependencies = [
     "typer>=0.16,<1",
 ]
 
+[project.optional-dependencies]
+embedding = [
+    "sentence-transformers>=3,<4",
+]
+
 [project.scripts]
 researchflow = "researchflow.cli:app"
 

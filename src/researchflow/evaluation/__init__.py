@@ -6,6 +6,12 @@ from researchflow.evaluation.dataset import (
     EvaluationCase,
     EvaluationDocument,
 )
+from researchflow.evaluation.embeddings import (
+    EmbeddingProvider,
+    EmbeddingRetriever,
+    EmbeddingUnavailableError,
+    SentenceTransformerProvider,
+)
 from researchflow.evaluation.evaluator import evaluate_retriever
 from researchflow.evaluation.metrics import summarize_rankings
 
@@ -16,4 +22,8 @@ __all__ = [
     "EvaluationDocument",
     "summarize_rankings",
     "evaluate_retriever",
+    "EmbeddingProvider",
+    "EmbeddingRetriever",
+    "EmbeddingUnavailableError",
+    "SentenceTransformerProvider",
 ]
