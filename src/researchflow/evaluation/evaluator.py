@@ -1,6 +1,9 @@
 """Run retriever baselines over the fixed bilingual evaluation set."""
 
-from researchflow.evaluation.dataset import EVALUATION_CASES, EVALUATION_DOCUMENTS, EvaluationDocument
+from researchflow.evaluation.dataset import (
+    EVALUATION_CASES,
+    EVALUATION_DOCUMENTS,
+)
 from researchflow.evaluation.metrics import summarize_rankings
 from researchflow.tools.offline import Bm25SearchBackend, KeywordSearchBackend
 from researchflow.tools.offline.interfaces import Document
@@ -31,7 +34,13 @@ def evaluate_retriever(retriever: str) -> dict[str, dict[str, dict[str, float | 
         rankings = {}
         for case in EVALUATION_CASES:
             source = _LanguageDocumentSource(case.language)
-            backend = KeywordSearchBackend(source) if name == "keyword" else Bm25SearchBackend(source)
-            rankings[case.case_id] = tuple(hit.path for hit in backend.search(case.query, 5))
+            backend = (
+                KeywordSearchBackend(source)
+                if name == "keyword"
+                else Bm25SearchBackend(source)
+            )
+            rankings[case.case_id] = tuple(
+                hit.path for hit in backend.search(case.query, 5)
+            )
         result[name] = summarize_rankings(EVALUATION_CASES, rankings)
     return result

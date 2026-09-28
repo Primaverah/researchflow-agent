@@ -168,7 +168,9 @@ class Bm25SearchBackend:
                 document = self._source.read_document(path)
             except ToolFailure:
                 continue
-            documents.append((document, _bm25_tokens(document.title + " " + document.content)))
+            documents.append(
+                (document, _bm25_tokens(document.title + " " + document.content))
+            )
         query_terms = _bm25_tokens(query)
         if not query_terms or not documents:
             return []
@@ -180,7 +182,13 @@ class Bm25SearchBackend:
         for document, tokens in documents:
             frequencies = Counter(tokens)
             score = sum(
-                _bm25_score(frequencies[term], document_frequency[term], len(documents), len(tokens), average_length)
+                _bm25_score(
+                    frequencies[term],
+                    document_frequency[term],
+                    len(documents),
+                    len(tokens),
+                    average_length,
+                )
                 for term in query_terms
                 if term in frequencies
             )
@@ -215,7 +223,9 @@ def _bm25_score(
 ) -> float:
     k1 = 1.5
     b = 0.75
-    inverse_frequency = math.log(1 + (document_count - document_frequency + 0.5) / (document_frequency + 0.5))
+    inverse_frequency = math.log(
+        1 + (document_count - document_frequency + 0.5) / (document_frequency + 0.5)
+    )
     normalization = k1 * (1 - b + b * document_length / average_length)
     return inverse_frequency * frequency * (k1 + 1) / (frequency + normalization)
 

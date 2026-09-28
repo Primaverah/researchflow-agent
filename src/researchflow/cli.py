@@ -1,5 +1,6 @@
 """Command-line interface for ResearchFlow Agent."""
 
+import json
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -14,6 +15,7 @@ from researchflow.agent import (
     StateSelector,
 )
 from researchflow.domain import AgentState, AgentStatus, ToolResult
+from researchflow.evaluation import evaluate_retriever
 from researchflow.execution import JsonlTraceRecorder, ToolExecutor
 from researchflow.tools import ToolContext, ToolRegistry
 from researchflow.tools.offline import create_offline_tools
@@ -157,6 +159,31 @@ def _render_state(state: AgentState, context: ToolContext, *, verbose: bool) -> 
             if trace.error_type is not None:
                 detail += f" — {trace.error_type}: {trace.error_message}"
             typer.echo(detail)
+
+
+@app.command("evaluate")
+def evaluate(
+    retriever: Annotated[
+        str,
+        typer.Option("--retriever", help="Retriever baseline: keyword, bm25, or all."),
+    ] = "all",
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", help="Optional UTF-8 JSON result path."),
+    ] = None,
+) -> None:
+    """Evaluate keyword and BM25 retrieval on the bilingual baseline."""
+    if retriever not in {"keyword", "bm25", "all"}:
+        _input_error("--retriever 必须为 keyword、bm25 或 all")
+    result = evaluate_retriever(retriever)
+    rendered = json.dumps(result, ensure_ascii=False, indent=2)
+    if output is not None:
+        try:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(rendered + "\n", encoding="utf-8")
+        except OSError:
+            _input_error("评测结果无法保存")
+    typer.echo(rendered)
 
 
 @app.command("run")

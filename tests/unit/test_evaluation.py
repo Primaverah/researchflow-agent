@@ -1,6 +1,10 @@
 """Tests for the bilingual retrieval evaluation baseline."""
 
-from researchflow.evaluation import EvaluationCase, evaluate_retriever, summarize_rankings
+from researchflow.evaluation import (
+    EvaluationCase,
+    evaluate_retriever,
+    summarize_rankings,
+)
 from researchflow.tools.offline import Bm25SearchBackend
 from researchflow.tools.offline.interfaces import Document
 

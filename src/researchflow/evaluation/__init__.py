@@ -6,8 +6,8 @@ from researchflow.evaluation.dataset import (
     EvaluationCase,
     EvaluationDocument,
 )
-from researchflow.evaluation.metrics import summarize_rankings
 from researchflow.evaluation.evaluator import evaluate_retriever
+from researchflow.evaluation.metrics import summarize_rankings
 
 __all__ = [
     "EVALUATION_CASES",
