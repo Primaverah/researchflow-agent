@@ -1,8 +1,11 @@
 """Local filesystem and keyword-search backends."""
 
+import math
 import os
+import re
 import tempfile
 import unicodedata
+from collections import Counter
 from pathlib import Path
 
 from researchflow.tools.errors import ToolFailure, UnsafePathError
@@ -150,6 +153,71 @@ class KeywordSearchBackend:
         if end - start < SNIPPET_LENGTH:
             start = max(0, end - SNIPPET_LENGTH)
         return content[start:end].replace("\n", " ")
+
+
+class Bm25SearchBackend:
+    """Dependency-free BM25 ranking over one document source."""
+
+    def __init__(self, source: DocumentSource) -> None:
+        self._source = source
+
+    def search(self, query: str, limit: int) -> list[SearchHit]:
+        documents = []
+        for path in self._source.list_documents():
+            try:
+                document = self._source.read_document(path)
+            except ToolFailure:
+                continue
+            documents.append((document, _bm25_tokens(document.title + " " + document.content)))
+        query_terms = _bm25_tokens(query)
+        if not query_terms or not documents:
+            return []
+        average_length = sum(len(tokens) for _, tokens in documents) / len(documents)
+        document_frequency = Counter(
+            term for _, tokens in documents for term in set(tokens)
+        )
+        hits = []
+        for document, tokens in documents:
+            frequencies = Counter(tokens)
+            score = sum(
+                _bm25_score(frequencies[term], document_frequency[term], len(documents), len(tokens), average_length)
+                for term in query_terms
+                if term in frequencies
+            )
+            if score > 0:
+                hits.append(
+                    SearchHit(
+                        path=document.path,
+                        title=document.title,
+                        score=score,
+                        snippet=KeywordSearchBackend._snippet(
+                            document.content, _normalize(query), tuple(query_terms)
+                        ),
+                    )
+                )
+        hits.sort(key=lambda hit: (-hit.score, hit.path))
+        return hits[:limit]
+
+
+def _bm25_tokens(text: str) -> tuple[str, ...]:
+    normalized = _normalize(text)
+    if any("\u4e00" <= character <= "\u9fff" for character in normalized):
+        return tuple(character for character in normalized if not character.isspace())
+    return tuple(re.findall(r"[\w]+", normalized))
+
+
+def _bm25_score(
+    frequency: int,
+    document_frequency: int,
+    document_count: int,
+    document_length: int,
+    average_length: float,
+) -> float:
+    k1 = 1.5
+    b = 0.75
+    inverse_frequency = math.log(1 + (document_count - document_frequency + 0.5) / (document_frequency + 0.5))
+    normalization = k1 * (1 - b + b * document_length / average_length)
+    return inverse_frequency * frequency * (k1 + 1) / (frequency + normalization)
 
 
 class FileSystemNoteStore:
