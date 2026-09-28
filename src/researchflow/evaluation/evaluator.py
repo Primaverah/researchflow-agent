@@ -43,6 +43,11 @@ def evaluate_retriever(
     )
     if not set(names) <= {"keyword", "bm25", "embedding", "hybrid"}:
         raise ValueError("retriever must be keyword, bm25, embedding, hybrid, or all")
+    embedding_provider = (
+        provider or SentenceTransformerProvider(model_name)
+        if {"embedding", "hybrid"} & set(names)
+        else None
+    )
     result = {}
     for name in names:
         rankings = {}
@@ -55,7 +60,7 @@ def evaluate_retriever(
                 hits = Bm25SearchBackend(source).search(case.query, 5)
             else:
                 embedding = EmbeddingRetriever(
-                    documents, provider or SentenceTransformerProvider(model_name)
+                    documents, embedding_provider
                 ).search(case.query, 5)
                 hits = (
                     embedding
