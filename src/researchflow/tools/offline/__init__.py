@@ -1,6 +1,7 @@
 """Public API for ResearchFlow's offline tools and local backends."""
 
 from researchflow.tools.offline.backends import (
+    Bm25SearchBackend,
     FileSystemDocumentSource,
     FileSystemNoteStore,
     KeywordSearchBackend,
@@ -31,6 +32,7 @@ __all__ = [
     "FileSystemDocumentSource",
     "FileSystemNoteStore",
     "KeywordSearchBackend",
+    "Bm25SearchBackend",
     "NoteStore",
     "ReadDocumentArgs",
     "ReadDocumentOutput",

@@ -28,7 +28,7 @@ network service and is not intended to be a production research platform.
 The first version intentionally does not provide:
 
 - LLM reasoning or generation
-- Semantic, vector, or BM25 retrieval
+- Semantic, vector, or embedding retrieval
 - External paper or web search
 - Database persistence
 - MCP or Agent Skills integration
@@ -96,6 +96,18 @@ maximum steps: 10
 ```
 
 ## CLI Usage
+
+Evaluate the deterministic bilingual retrieval baselines:
+
+```bash
+uv run researchflow evaluate --retriever all --output evaluation.json
+```
+
+The evaluation reports Recall@1, Recall@3, Recall@5, and MRR separately for
+Chinese, English, and all queries. The compact original dataset evaluates only
+same-language retrieval: Chinese queries rank Chinese documents and English
+queries rank English documents. The JSON result is written with UTF-8 when
+`--output` is supplied.
 
 Run with a positional research question:
 

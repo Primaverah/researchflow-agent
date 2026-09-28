@@ -72,6 +72,28 @@ def test_version_is_available() -> None:
     assert result.stdout.strip() == f"researchflow {__version__}"
 
 
+def test_evaluate_outputs_all_retrievers_and_writes_utf8_json(tmp_path: Path) -> None:
+    output = tmp_path / "metrics" / "evaluation.json"
+
+    result = runner.invoke(
+        app,
+        ["evaluate", "--retriever", "all", "--output", str(output)],
+    )
+
+    assert result.exit_code == 0
+    saved = json.loads(output.read_text(encoding="utf-8"))
+    assert set(saved) == {"keyword", "bm25"}
+    assert saved["keyword"]["zh"]["queries"] == 2
+    assert '"overall"' in result.stdout
+
+
+def test_evaluate_rejects_unknown_retriever() -> None:
+    result = runner.invoke(app, ["evaluate", "--retriever", "unknown"])
+
+    assert result.exit_code == 2
+    assert "--retriever" in result.output
+
+
 def test_direct_mode_displays_run_sections_and_real_paths(cli_paths) -> None:
     documents, output = cli_paths
 
