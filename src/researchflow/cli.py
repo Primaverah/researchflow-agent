@@ -64,6 +64,8 @@ def run_agent(
     ] = 10,
 ) -> None:
     """Run the offline rule-driven research workflow."""
+    if not query.strip():
+        raise typer.BadParameter("query cannot be blank", param_hint="query")
     if not documents_dir.is_dir():
         raise typer.BadParameter(
             "documents directory does not exist or is not a directory",

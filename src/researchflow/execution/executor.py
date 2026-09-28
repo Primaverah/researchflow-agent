@@ -1,5 +1,6 @@
 """Unified synchronous entry point for traced tool calls."""
 
+import logging
 import time
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -15,6 +16,8 @@ from researchflow.execution.recorder import TraceRecorder
 from researchflow.tools import ToolContext, ToolError, ToolNotFoundError, ToolRegistry
 from researchflow.tools.errors import ToolValidationError
 
+logger = logging.getLogger(__name__)
+
 
 class ToolExecutor:
     """Execute one registered tool and persist exactly one completed trace."""
@@ -25,9 +28,16 @@ class ToolExecutor:
 
     def execute(self, call: ToolCall, context: ToolContext) -> ToolResult:
         """Execute a tool call and record its result and duration."""
+        result, _ = self.execute_with_trace(call, context)
+        return result
+
+    def execute_with_trace(
+        self, call: ToolCall, context: ToolContext
+    ) -> tuple[ToolResult, ExecutionTrace]:
+        """Execute one call and return the exact trace persisted by the recorder."""
         started_at = datetime.now(UTC)
         started_counter = time.perf_counter()
-        original_arguments = deepcopy(call.arguments)
+        original_arguments = self._trace_arguments(call)
         try:
             tool = self._registry.get(call.tool_name)
             result = tool.execute(call, context)
@@ -39,6 +49,9 @@ class ToolExecutor:
             error_type = getattr(exc, "error_type", "tool_execution_error")
             result = self._failure_result(call, error_type, str(exc))
         except Exception:
+            logger.exception(
+                "unexpected error while executing tool '%s'", call.tool_name
+            )
             result = self._failure_result(
                 call,
                 "tool_execution_error",
@@ -55,7 +68,19 @@ class ToolExecutor:
             duration_ms,
         )
         self._recorder.record(trace, context)
-        return result
+        return result, trace
+
+    @staticmethod
+    def _trace_arguments(call: ToolCall) -> dict[str, object]:
+        """Copy arguments while redacting note bodies from durable traces."""
+        arguments = deepcopy(call.arguments)
+        content = arguments.get("content")
+        if call.tool_name == "save_note" and isinstance(content, str):
+            arguments["content"] = {
+                "redacted": True,
+                "char_count": len(content),
+            }
+        return arguments
 
     @staticmethod
     def _failure_result(

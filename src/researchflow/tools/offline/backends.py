@@ -185,7 +185,17 @@ class FileSystemNoteStore:
                 temporary_file.write(content)
                 temporary_file.flush()
                 os.fsync(temporary_file.fileno())
-            os.replace(temporary_path, verified_target)
+            if overwrite:
+                os.replace(temporary_path, verified_target)
+            else:
+                try:
+                    os.link(temporary_path, verified_target)
+                except FileExistsError as exc:
+                    raise ToolFailure(
+                        "note already exists", error_type="note_exists"
+                    ) from exc
+                temporary_path.unlink()
+                temporary_path = None
         except UnsafePathError as exc:
             raise ToolFailure(
                 "note path is outside the allowed root", error_type="unsafe_path"

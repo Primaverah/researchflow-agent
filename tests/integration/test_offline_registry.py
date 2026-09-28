@@ -240,10 +240,10 @@ def test_failed_atomic_save_removes_temporary_files(
 ) -> None:
     context, tools = offline_environment
 
-    def fail_replace(source, destination) -> None:
+    def fail_link(source, destination) -> None:
         raise OSError("simulated failure")
 
-    monkeypatch.setattr(os, "replace", fail_replace)
+    monkeypatch.setattr(os, "link", fail_link)
     result = execute(
         tools["save_note"], context, {"path": "note.md", "content": "内容"}
     )
@@ -252,3 +252,26 @@ def test_failed_atomic_save_removes_temporary_files(
     assert result.error_type == "write_failed"
     assert not (context.output_directory / "note.md").exists()
     assert list(context.output_directory.iterdir()) == []
+
+
+def test_non_overwrite_save_is_atomic_when_target_appears(
+    offline_environment, monkeypatch
+) -> None:
+    context, tools = offline_environment
+    original_link = os.link
+
+    def create_competing_target(source, destination) -> None:
+        destination.write_text("竞争内容", encoding="utf-8")
+        original_link(source, destination)
+
+    monkeypatch.setattr(os, "link", create_competing_target)
+    result = execute(
+        tools["save_note"], context, {"path": "note.md", "content": "新内容"}
+    )
+
+    assert result.success is False
+    assert result.error_type == "note_exists"
+    assert (context.output_directory / "note.md").read_text(
+        encoding="utf-8"
+    ) == "竞争内容"
+    assert not list(context.output_directory.glob(".researchflow-*.tmp"))

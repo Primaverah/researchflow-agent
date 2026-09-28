@@ -44,6 +44,26 @@ def test_tool_call_rejects_invalid_tool_names(tool_name: str) -> None:
         ToolCall(call_id="call-1", tool_name=tool_name, arguments={})
 
 
+@pytest.mark.parametrize("tool_name", ["", " ", "UPPER", "has space", "bang!"])
+def test_plan_step_rejects_invalid_tool_names(tool_name: str) -> None:
+    with pytest.raises(ValidationError):
+        PlanStep(step_id="step-1", description="Run tool", tool_name=tool_name)
+
+
+@pytest.mark.parametrize("tool_name", ["", " ", "UPPER", "has space", "bang!"])
+def test_execution_trace_rejects_invalid_tool_names(tool_name: str) -> None:
+    with pytest.raises(ValidationError):
+        ExecutionTrace(
+            trace_id="trace-1",
+            run_id="run-1",
+            call_id="call-1",
+            tool_name=tool_name,
+            arguments={},
+            status=ExecutionStatus.SUCCEEDED,
+            duration_ms=0,
+        )
+
+
 def test_models_reject_unknown_fields() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         ToolCall(
@@ -77,6 +97,56 @@ def test_failed_tool_result_requires_error_details() -> None:
             tool_name="example",
             success=False,
         )
+
+
+def test_rejected_plan_step_assignment_is_atomic() -> None:
+    step = PlanStep(step_id="step-1", description="A step")
+
+    with pytest.raises(ValidationError):
+        step.status = PlanStepStatus.FAILED
+
+    assert step.status is PlanStepStatus.PENDING
+    assert step.error_message is None
+
+
+def test_rejected_tool_result_assignment_is_atomic() -> None:
+    result = ToolResult(call_id="call-1", tool_name="example", success=True)
+
+    with pytest.raises(ValidationError):
+        result.success = False
+
+    assert result.success is True
+    assert result.error_type is None
+    assert result.error_message is None
+
+
+def test_rejected_trace_assignment_is_atomic() -> None:
+    trace = ExecutionTrace(
+        trace_id="trace-1",
+        run_id="run-1",
+        call_id="call-1",
+        tool_name="example",
+        arguments={},
+        status=ExecutionStatus.SUCCEEDED,
+        duration_ms=0,
+    )
+
+    with pytest.raises(ValidationError):
+        trace.status = ExecutionStatus.FAILED
+
+    assert trace.status is ExecutionStatus.SUCCEEDED
+    assert trace.error_type is None
+    assert trace.error_message is None
+
+
+def test_rejected_agent_state_assignment_is_atomic() -> None:
+    state = AgentState(run_id="run-1", query="Research tools")
+
+    with pytest.raises(ValidationError):
+        state.status = AgentStatus.COMPLETED
+
+    assert state.status is AgentStatus.INITIALIZED
+    assert state.final_answer is None
 
 
 def test_domain_models_serialize_and_deserialize() -> None:

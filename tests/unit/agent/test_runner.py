@@ -8,7 +8,14 @@ from researchflow.agent import (
     RulePlanner,
     StateSelector,
 )
-from researchflow.domain import AgentStatus, PlanStepStatus, ToolCall, ToolResult
+from researchflow.domain import (
+    AgentStatus,
+    ExecutionStatus,
+    ExecutionTrace,
+    PlanStepStatus,
+    ToolCall,
+    ToolResult,
+)
 from researchflow.tools import ToolContext
 
 
@@ -17,9 +24,25 @@ class FakeExecutor:
         self.handler = handler
         self.calls: list[ToolCall] = []
 
-    def execute(self, call: ToolCall, context: ToolContext) -> ToolResult:
+    def execute_with_trace(
+        self, call: ToolCall, context: ToolContext
+    ) -> tuple[ToolResult, ExecutionTrace]:
         self.calls.append(call)
-        return self.handler(call)
+        result = self.handler(call)
+        trace = ExecutionTrace(
+            trace_id=f"trace-{len(self.calls)}",
+            run_id=context.run_id,
+            call_id=call.call_id,
+            tool_name=call.tool_name,
+            arguments=call.arguments,
+            status=(
+                ExecutionStatus.SUCCEEDED if result.success else ExecutionStatus.FAILED
+            ),
+            duration_ms=0,
+            error_type=result.error_type,
+            error_message=result.error_message,
+        )
+        return result, trace
 
 
 def context(tmp_path: Path) -> ToolContext:
@@ -166,3 +189,20 @@ def test_max_steps_stops_before_next_action(tmp_path: Path) -> None:
     assert state.status is AgentStatus.FAILED
     assert len(executor.calls) == 1
     assert "最大步骤" in state.final_answer
+    assert state.current_step_id is None
+    assert state.plan.steps[0].status is PlanStepStatus.COMPLETED
+    assert state.plan.steps[1].status is PlanStepStatus.PENDING
+
+
+def test_state_owns_the_exact_trace_for_each_tool_call(tmp_path: Path) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return result(call, output={"hits": []})
+        return result(call, output={"path": "notes/run-1.md", "char_count": 1})
+
+    state = runner(FakeExecutor(handler)).run("问题", context(tmp_path))
+
+    assert len(state.traces) == len(state.tool_calls) == 2
+    assert [trace.call_id for trace in state.traces] == [
+        call.call_id for call in state.tool_calls
+    ]

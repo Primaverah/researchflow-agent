@@ -58,3 +58,17 @@ def test_run_rejects_missing_documents_directory(tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert "documents directory" in result.stderr
+
+
+def test_run_rejects_blank_query_without_traceback(tmp_path: Path) -> None:
+    documents = tmp_path / "documents"
+    documents.mkdir()
+
+    result = runner.invoke(
+        app,
+        ["run", "   ", "--documents-dir", str(documents)],
+    )
+
+    assert result.exit_code == 2
+    assert "query cannot be blank" in result.stderr
+    assert "Traceback" not in result.stderr

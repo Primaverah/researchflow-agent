@@ -10,6 +10,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationError,
     model_validator,
 )
 
@@ -26,6 +27,17 @@ class DomainModel(BaseModel):
     """Base validation configuration for public domain models."""
 
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Roll back a field assignment when whole-model validation rejects it."""
+        values_before = self.__dict__.copy()
+        fields_set_before = self.__pydantic_fields_set__.copy()
+        try:
+            super().__setattr__(name, value)
+        except ValidationError:
+            object.__setattr__(self, "__dict__", values_before)
+            object.__setattr__(self, "__pydantic_fields_set__", fields_set_before)
+            raise
 
 
 class PlanStepStatus(StrEnum):
@@ -61,7 +73,7 @@ class PlanStep(DomainModel):
     step_id: NonEmptyString
     description: NonEmptyString
     status: PlanStepStatus = PlanStepStatus.PENDING
-    tool_name: NonEmptyString | None = None
+    tool_name: ToolName | None = None
     result_summary: NonEmptyString | None = None
     error_message: NonEmptyString | None = None
 
@@ -130,7 +142,7 @@ class ExecutionTrace(DomainModel):
     trace_id: NonEmptyString
     run_id: NonEmptyString
     call_id: NonEmptyString
-    tool_name: NonEmptyString
+    tool_name: ToolName
     arguments: dict[str, Any] = Field(default_factory=dict)
     status: ExecutionStatus
     started_at: AwareDatetime = Field(default_factory=utc_now)

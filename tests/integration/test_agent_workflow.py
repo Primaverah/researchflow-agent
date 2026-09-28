@@ -80,6 +80,14 @@ def test_complete_workflow_writes_note_and_parseable_traces(tmp_path: Path) -> N
         "read_document",
         "save_note",
     ]
+    assert len(state.traces) == len(records)
+    assert [trace.trace_id for trace in state.traces] == [
+        record["trace_id"] for record in records
+    ]
+    assert records[-1]["arguments"]["content"] == {
+        "redacted": True,
+        "char_count": len(state.final_answer),
+    }
 
 
 def test_no_results_still_saves_report(tmp_path: Path) -> None:

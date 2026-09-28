@@ -4,12 +4,12 @@ A tool-using AI agent for technical research and literature analysis.
 
 ## Planned Features
 
-- [ ] Task planning
+- [x] Rule-based task planning
 - [ ] Paper search
-- [ ] Document reading
-- [ ] Tool selection
+- [x] Local document reading
+- [x] Rule-based tool selection
 - [ ] Citation-based answering
-- [ ] Execution tracing
+- [x] JSONL execution tracing
 - [ ] Agent evaluation
 - [ ] MCP integration
 - [ ] Agent Skills support
@@ -101,6 +101,10 @@ The JSONL recorder appends one independently parseable JSON object per line to
 ```json
 {"trace_id":"...","run_id":"example-run","call_id":"search-2","tool_name":"search_documents","arguments":{"query":"Agent 安全","limit":3},"status":"succeeded","started_at":"2026-09-20T10:00:00Z","duration_ms":1.25,"error_type":null,"error_message":null}
 ```
+
+Trace files are the durable execution record. The returned `AgentState` also
+contains the exact traces produced during that run. Large note bodies are redacted
+from trace arguments and represented by their character count.
 
 ### Rule-driven agent
 

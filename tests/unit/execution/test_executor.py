@@ -1,5 +1,6 @@
 """Tests for the traced tool executor."""
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -137,20 +138,26 @@ def test_expected_failure_preserves_error(context: ToolContext) -> None:
     assert tool.execution_count == 1
 
 
-def test_unexpected_exception_becomes_failure(context: ToolContext) -> None:
+def test_unexpected_exception_becomes_failure(
+    context: ToolContext, caplog: pytest.LogCaptureFixture
+) -> None:
     tool = BrokenTool()
     executor, recorder = build_executor(tool)
 
-    result = executor.execute(
-        ToolCall(call_id="call-1", tool_name="broken", arguments={"value": 1}),
-        context,
-    )
+    with caplog.at_level(logging.ERROR, logger="researchflow.execution.executor"):
+        result = executor.execute(
+            ToolCall(call_id="call-1", tool_name="broken", arguments={"value": 1}),
+            context,
+        )
 
     assert result.success is False
     assert result.error_type == "tool_execution_error"
     assert "boom" not in result.error_message
     assert recorder.traces[0].status is ExecutionStatus.FAILED
     assert tool.execution_count == 1
+    assert len(caplog.records) == 1
+    assert caplog.records[0].exc_info is not None
+    assert "unexpected error while executing tool 'broken'" in caplog.text
 
 
 def test_unknown_tool_becomes_failure(context: ToolContext) -> None:
@@ -165,6 +172,32 @@ def test_unknown_tool_becomes_failure(context: ToolContext) -> None:
     assert result.error_type == "tool_not_found"
     assert recorder.traces[0].arguments == {"query": "中文"}
     assert recorder.traces[0].status is ExecutionStatus.FAILED
+
+
+def test_execute_with_trace_returns_the_recorded_trace(context: ToolContext) -> None:
+    executor, recorder = build_executor(CountingTool())
+    call = ToolCall(call_id="call-1", tool_name="counting", arguments={"value": 1})
+
+    result, trace = executor.execute_with_trace(call, context)
+
+    assert result.success is True
+    assert recorder.traces == [trace]
+
+
+def test_save_note_content_is_redacted_from_trace(context: ToolContext) -> None:
+    executor, recorder = build_executor()
+    call = ToolCall(
+        call_id="call-1",
+        tool_name="save_note",
+        arguments={"path": "notes/report.md", "content": "敏感研究内容"},
+    )
+
+    executor.execute(call, context)
+
+    assert recorder.traces[0].arguments["content"] == {
+        "redacted": True,
+        "char_count": 6,
+    }
 
 
 def test_keyboard_interrupt_is_not_captured(context: ToolContext) -> None:

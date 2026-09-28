@@ -117,9 +117,10 @@ class AgentRunner:
             tool_name=action.tool_name or "invalid",
             arguments=action.arguments,
         )
-        result = self._executor.execute(call, context)
+        result, trace = self._executor.execute_with_trace(call, context)
         state.tool_calls.append(call)
         state.tool_results.append(result)
+        state.traces.append(trace)
 
         if step_id in {"search", "save"}:
             if result.success:
@@ -167,6 +168,7 @@ class AgentRunner:
             step = self._step(state, state.current_step_id)
             if step.status is PlanStepStatus.RUNNING:
                 self._mark_failed(state, state.current_step_id, MAX_STEPS_MESSAGE)
+        state.current_step_id = None
         state.final_answer = MAX_STEPS_MESSAGE
         state.status = AgentStatus.FAILED
         self._touch(state)
