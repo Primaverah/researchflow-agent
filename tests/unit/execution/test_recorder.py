@@ -75,8 +75,14 @@ def test_different_runs_use_different_files(tmp_path: Path) -> None:
     recorder.record(make_trace("run-2", "trace-2"), second)
 
     traces = first.output_directory / "traces"
-    assert json.loads((traces / "run-1.jsonl").read_text())["trace_id"] == "trace-1"
-    assert json.loads((traces / "run-2.jsonl").read_text())["trace_id"] == "trace-2"
+    assert (
+        json.loads((traces / "run-1.jsonl").read_text(encoding="utf-8"))["trace_id"]
+        == "trace-1"
+    )
+    assert (
+        json.loads((traces / "run-2.jsonl").read_text(encoding="utf-8"))["trace_id"]
+        == "trace-2"
+    )
 
 
 @pytest.mark.parametrize(

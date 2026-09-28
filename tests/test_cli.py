@@ -91,7 +91,8 @@ def test_direct_mode_displays_run_sections_and_real_paths(cli_paths) -> None:
     assert f"报告: {note.resolve()}" in result.stdout
     assert f"Trace: {trace.resolve()}" in result.stdout
     tool_names = [
-        json.loads(line)["tool_name"] for line in trace.read_text().splitlines()
+        json.loads(line)["tool_name"]
+        for line in trace.read_text(encoding="utf-8").splitlines()
     ]
     assert tool_names == [
         "search_documents",
