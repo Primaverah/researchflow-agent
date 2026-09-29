@@ -4,6 +4,7 @@ import re
 import unicodedata
 
 from researchflow.tools.offline import ReadDocumentOutput
+from researchflow.tools.web import WebSource
 
 MAX_EXTRACTS_PER_DOCUMENT = 2
 MAX_EXTRACT_LENGTH = 240
@@ -16,7 +17,12 @@ def _normalize(text: str) -> str:
 class ExtractiveSummarizer:
     """Build a Markdown report using only text from read documents."""
 
-    def summarize(self, query: str, documents: list[ReadDocumentOutput]) -> str:
+    def summarize(
+        self,
+        query: str,
+        documents: list[ReadDocumentOutput],
+        web_sources: list[WebSource] | None = None,
+    ) -> str:
         """Return a stable report with extracts and verified local sources."""
         extracts: list[str] = []
         sources: list[tuple[str, str]] = []
@@ -42,9 +48,17 @@ class ExtractiveSummarizer:
             if extracts
             else ["- 未找到相关文档。"]
         )
-        source_lines = (
-            [f"- {title} — {path}" for title, path in sources] if sources else ["- 无"]
+        web_sources = web_sources or []
+        source_lines = [
+            f"[{index}] {title} — {path}"
+            for index, (title, path) in enumerate(sources, start=1)
+        ]
+        source_lines.extend(
+            f"[{index}] {source.title} — {source.url}"
+            for index, source in enumerate(web_sources, start=len(source_lines) + 1)
         )
+        if not source_lines:
+            source_lines = ["- 无"]
         return "\n".join(
             [
                 "# 研究报告",

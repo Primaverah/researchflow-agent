@@ -117,6 +117,19 @@ rule component. LLM decisions can select only the existing local search, read,
 and save tools. JSONL traces record sanitized decision component/model/token
 usage metadata, never prompts, model output, or API keys.
 
+### Optional web sources
+
+Set `RESEARCHFLOW_SEARCH_API_KEY` to enable Tavily search, then opt in per run:
+
+```bash
+uv run researchflow run "tool calling" --enable-web
+```
+
+Only ordinary public HTTP/HTTPS HTML pages are fetched. Local/private addresses,
+non-HTML responses, PDFs, redirects to unsafe hosts, and oversized pages are
+rejected. Reports number only successfully searched and fetched web sources;
+traces never contain API keys or response bodies.
+
 Evaluate the deterministic bilingual retrieval baselines:
 
 ```bash

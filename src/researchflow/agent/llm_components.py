@@ -14,6 +14,7 @@ from researchflow.agent.summarizer import ExtractiveSummarizer
 from researchflow.domain import AgentState, PlanStep, ResearchPlan
 from researchflow.llm import BaseLLMProvider, LLMError, LLMRequest
 from researchflow.tools.offline import ReadDocumentOutput
+from researchflow.tools.web import WebSource
 
 _PLAN_STEPS = (
     ("search", "search_documents"),
@@ -245,7 +246,12 @@ class LLMSummarizer(_LLMComponent):
         super().__init__(provider, model_name)
         self._fallback_summarizer = fallback
 
-    def summarize(self, query: str, documents: list[ReadDocumentOutput]) -> str:
+    def summarize(
+        self,
+        query: str,
+        documents: list[ReadDocumentOutput],
+        web_sources: list[WebSource] | None = None,
+    ) -> str:
         try:
             output = self._complete(
                 "Summarize only these successfully read local documents as JSON: "
@@ -268,7 +274,7 @@ class LLMSummarizer(_LLMComponent):
                 raise ValueError("LLM cited a source that was not read")
         except (LLMError, ValidationError, ValueError):
             self._fallback("summarizer")
-            return self._fallback_summarizer.summarize(query, documents)
+            return self._fallback_summarizer.summarize(query, documents, web_sources)
         assert self.last_decision is not None
         self.last_decision = LLMDecision(
             component="summarizer",

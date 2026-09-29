@@ -17,6 +17,8 @@ from researchflow.agent import (
     LLMSummarizer,
     RulePlanner,
     StateSelector,
+    WebRulePlanner,
+    WebStateSelector,
 )
 from researchflow.domain import AgentState, AgentStatus, ToolResult
 from researchflow.evaluation import evaluate_retriever
@@ -24,6 +26,11 @@ from researchflow.execution import JsonlTraceRecorder, ToolExecutor
 from researchflow.llm import LLMConfig, LLMError, LLMRequest, OpenAICompatibleProvider
 from researchflow.tools import ToolContext, ToolRegistry
 from researchflow.tools.offline import create_offline_tools
+from researchflow.tools.web import (
+    TavilySearchProvider,
+    WebSearchConfigurationError,
+    create_web_tools,
+)
 
 app = typer.Typer(
     name="researchflow",
@@ -103,6 +110,7 @@ def _run_workflow(
     output_dir: Path,
     max_steps: int,
     agent_mode: str = "rule",
+    enable_web: bool = False,
 ) -> tuple[AgentState, ToolContext]:
     context = _create_context(documents_dir, output_dir)
     registry = ToolRegistry()
@@ -111,6 +119,12 @@ def _run_workflow(
     planner = RulePlanner()
     selector = StateSelector()
     summarizer = ExtractiveSummarizer()
+    if enable_web:
+        provider = TavilySearchProvider.from_environment()
+        for tool in create_web_tools(provider):
+            registry.register(tool)
+        planner = WebRulePlanner()
+        selector = WebStateSelector()
     if agent_mode == "llm":
         try:
             provider = _create_llm_provider()
@@ -263,6 +277,10 @@ def run_agent(
         str,
         typer.Option("--agent-mode", help="Agent mode: rule (default) or llm."),
     ] = "rule",
+    enable_web: Annotated[
+        bool,
+        typer.Option("--enable-web", help="Enable optional Tavily web sources."),
+    ] = False,
     verbose: Annotated[
         bool,
         typer.Option("--verbose/--no-verbose", help="Show execution details."),
@@ -281,8 +299,10 @@ def run_agent(
             output_dir,
             max_steps,
             agent_mode,
+            enable_web,
         )
-        _render_state(state, context, verbose=verbose)
+    except WebSearchConfigurationError as exc:
+        _input_error(str(exc))
     except typer.Exit:
         raise
     except Exception as exc:
@@ -291,6 +311,8 @@ def run_agent(
             message = f"{message} ({type(exc).__name__}: {exc})"
         typer.echo(f"错误: {message}", err=True)
         raise typer.Exit(code=1) from None
+
+    _render_state(state, context, verbose=verbose)
 
     save_result = _latest_result(state, "save_note")
     if state.status is AgentStatus.FAILED or (

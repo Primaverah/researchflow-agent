@@ -10,6 +10,8 @@ class AgentActionType(StrEnum):
 
     SEARCH = "search"
     READ = "read"
+    WEB_SEARCH = "web_search"
+    FETCH_URL = "fetch_url"
     SUMMARIZE = "summarize"
     SAVE = "save"
     FINISH = "finish"
