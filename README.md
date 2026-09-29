@@ -4,12 +4,14 @@ ResearchFlow Agent is an offline, rule-driven agent for technical research over
 local documents. It searches and reads local files, produces an extractive
 summary, saves a Markdown report, and records parseable execution traces. The
 project focuses on explicit tool calls, validated state, filesystem safety, and a
-bounded execution loop. This first public version uses neither an LLM nor a
-network service and is not intended to be a production research platform.
+bounded execution loop. Rule mode is fully offline; an optional, configured LLM
+mode uses the same local tools and is not intended to be a production research
+platform.
 
 ## Features
 
-- Fixed rule-based planning and state-driven tool selection
+- Default rule-based planning and state-driven tool selection
+- Optional structured LLM planning, selection, and source-constrained summaries
 - Bounded, synchronous Agent execution loop
 - Deterministic keyword search over local documents
 - Strict UTF-8 Markdown and text document reading
@@ -21,14 +23,12 @@ network service and is not intended to be a production research platform.
 - One independently parseable JSON object per tool call in JSONL traces
 - Direct and one-shot interactive CLI modes
 - Optional verbose execution details without full document or note arguments
-- Fully offline operation without an API key
+- Fully offline rule mode without an API key
 
 ## Non-goals
 
-The first version intentionally does not provide:
+The project intentionally does not provide:
 
-- LLM reasoning or generation
-- Semantic, vector, or embedding retrieval
 - External paper or web search
 - Database persistence
 - MCP or Agent Skills integration
@@ -105,6 +105,18 @@ Install the optional client with `uv sync --extra llm`, copy `.env.example` to
 `uv run researchflow llm-check` to validate a structured response. Keys are
 read only from the environment and are never recorded in traces or output.
 
+Run the local workflow with structured LLM decisions:
+
+```bash
+uv run researchflow run "tool calling" --agent-mode llm
+```
+
+`rule` is the default mode and remains fully offline. In `llm` mode, missing
+configuration or invalid structured model output falls back to the equivalent
+rule component. LLM decisions can select only the existing local search, read,
+and save tools. JSONL traces record sanitized decision component/model/token
+usage metadata, never prompts, model output, or API keys.
+
 Evaluate the deterministic bilingual retrieval baselines:
 
 ```bash
@@ -159,6 +171,7 @@ Options:
 - `--documents-dir`: root directory searched and read by document tools
 - `--output-dir`: root directory for reports and traces
 - `--max-steps`: positive upper bound on Agent actions; default `10`
+- `--agent-mode`: `rule` (default) or optional configured `llm`
 - `--verbose/--no-verbose`: show or hide run ID, tool order, status, duration,
   and structured failure details; verbose output is disabled by default
 
@@ -266,21 +279,18 @@ uv.lock                 Locked dependencies
 
 ## Current Limitations
 
-- The research plan is fixed and rule-driven.
-- Search is keyword-oriented rather than semantic or generative.
-- Summaries are extractive rather than generated.
+- Rule mode has a fixed plan; LLM mode remains bounded to the same local tools.
+- Retrieval remains local and same-language; no web search is available.
+- LLM summaries cite only successfully read sources.
 - Inputs are local UTF-8 Markdown or text documents only.
 - Execution is synchronous and single-process.
-- There is no LLM, embedding model, database, MCP, or network search.
+- There is no reranker, database, MCP, or network search.
 - There is no conversational memory or multi-turn interaction.
 
 ## Roadmap
 
 Possible future work includes:
 
-- BM25 retrieval
-- Embedding and vector retrieval
-- Optional LLM planners and summarizers
 - Database-backed document sources
 - Web or academic search tools
 - MCP server and client integration
@@ -299,8 +309,9 @@ Third-party dependencies remain subject to their respective licenses.
 
 ## Quick Start
 
-ResearchFlow Agent is currently a rule-driven, completely offline agent. It does
-not call an LLM or network service and does not require an API key.
+ResearchFlow Agent defaults to a rule-driven, completely offline workflow. The
+optional LLM mode needs explicit environment configuration and never adds network
+search or changes the local tool boundary.
 
 Install the locked dependencies, inspect the CLI, and run a first local research
 task:
@@ -411,12 +422,13 @@ Trace files are the durable execution record. The returned `AgentState` also
 contains the exact traces produced during that run. Large note bodies are redacted
 from trace arguments and represented by their character count.
 
-### Rule-driven agent
+### Agent modes
 
-The current agent is synchronous, offline, and rule-driven. It creates a fixed
-research plan, selects the local search/read/save tools, extracts relevant source
-text, saves a Markdown report, and records every real tool call. It does not use an
-LLM or any network service.
+The default `rule` mode is synchronous and offline. It creates a fixed research
+plan, selects the local search/read/save tools, extracts relevant source text,
+saves a Markdown report, and records every real tool call. Optional `llm` mode
+uses validated structured outputs for the same plan/selection/summary loop and
+falls back to rule behavior when the provider is unavailable or invalid.
 
 ```bash
 uv run researchflow run "tool calling" \

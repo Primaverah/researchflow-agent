@@ -8,7 +8,12 @@ from typer.testing import CliRunner
 
 from researchflow import __version__, cli
 from researchflow.cli import app
-from researchflow.llm import BaseLLMProvider, LLMResponse, TokenUsage
+from researchflow.llm import (
+    BaseLLMProvider,
+    LLMConfigurationError,
+    LLMResponse,
+    TokenUsage,
+)
 from researchflow.tools import ToolFailure
 from researchflow.tools.offline import FileSystemNoteStore
 
@@ -20,6 +25,58 @@ class FakeCheckProvider(BaseLLMProvider):
         return LLMResponse(
             content='{"status":"ok"}',
             usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+
+
+class FakeAgentProvider(BaseLLMProvider):
+    def __init__(self) -> None:
+        self._responses = iter(
+            [
+                {
+                    "steps": [
+                        {
+                            "step_id": "search",
+                            "description": "Search local documents",
+                            "tool_name": "search_documents",
+                        },
+                        {
+                            "step_id": "read",
+                            "description": "Read local documents",
+                            "tool_name": "read_document",
+                        },
+                        {"step_id": "summarize", "description": "Summarize"},
+                        {
+                            "step_id": "save",
+                            "description": "Save report",
+                            "tool_name": "save_note",
+                        },
+                    ]
+                },
+                {
+                    "action_type": "search",
+                    "tool_name": "search_documents",
+                    "arguments": {"query": "工具调用", "limit": 5},
+                },
+                {
+                    "action_type": "read",
+                    "tool_name": "read_document",
+                    "arguments": {"path": "agent.md"},
+                },
+                {
+                    "action_type": "summarize",
+                    "tool_name": None,
+                    "arguments": {},
+                },
+                {"summary": "工具调用需要参数校验。", "source_paths": ["agent.md"]},
+                {"action_type": "save", "tool_name": "save_note", "arguments": {}},
+                {"action_type": "finish", "tool_name": None, "arguments": {}},
+            ]
+        )
+
+    def complete(self, request):
+        return LLMResponse(
+            content=json.dumps(next(self._responses)),
+            usage=TokenUsage(input_tokens=2, output_tokens=1),
         )
 
 
@@ -71,6 +128,7 @@ def test_run_help_lists_modes_and_options() -> None:
     assert "--documents-dir" in result.stdout
     assert "--output-dir" in result.stdout
     assert "--max-steps" in result.stdout
+    assert "--agent-mode" in result.stdout
     assert "--verbose" in result.stdout
 
 
@@ -91,6 +149,39 @@ def test_llm_check_uses_structured_fake_provider(
     assert result.exit_code == 0
     assert "status: ok" in result.stdout
     assert "input_tokens: 1" in result.stdout
+
+
+def test_llm_agent_mode_runs_with_fake_provider_and_records_decisions(
+    cli_paths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    documents, output = cli_paths
+    monkeypatch.setattr(cli, "_create_llm_provider", FakeAgentProvider)
+
+    result = invoke_run(documents, output, "--agent-mode", "llm")
+
+    assert result.exit_code == 0
+    trace = next((output / "traces").glob("*.jsonl"))
+    records = [
+        json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(record.get("event_type") == "llm_decision" for record in records)
+
+
+def test_llm_agent_mode_falls_back_to_rule_mode_without_configuration(
+    cli_paths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    documents, output = cli_paths
+
+    def missing_provider():
+        raise LLMConfigurationError("LLM API key is not configured")
+
+    monkeypatch.setattr(cli, "_create_llm_provider", missing_provider)
+
+    result = invoke_run(documents, output, "--agent-mode", "llm")
+
+    assert result.exit_code == 0
+    trace = next((output / "traces").glob("*.jsonl"))
+    assert "llm_decision" not in trace.read_text(encoding="utf-8")
 
 
 def test_evaluate_outputs_all_retrievers_and_writes_utf8_json(

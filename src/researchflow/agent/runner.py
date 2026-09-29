@@ -9,6 +9,7 @@ from researchflow.agent.summarizer import ExtractiveSummarizer
 from researchflow.domain import (
     AgentState,
     AgentStatus,
+    DecisionTrace,
     PlanStep,
     PlanStepStatus,
     ToolCall,
@@ -49,6 +50,7 @@ class AgentRunner:
             status=AgentStatus.PLANNED,
             plan=plan,
         )
+        self._record_decision(state, self._planner, context)
         state.status = AgentStatus.RUNNING
         action_count = 0
         call_count = 0
@@ -58,6 +60,7 @@ class AgentRunner:
                 self._fail_for_step_limit(state)
                 return state
             action = self._selector.select(state)
+            self._record_decision(state, self._selector, context)
             action_count += 1
 
             if action.action_type is AgentActionType.SEARCH:
@@ -78,7 +81,7 @@ class AgentRunner:
                 continue
 
             if action.action_type is AgentActionType.SUMMARIZE:
-                self._summarize(state)
+                self._summarize(state, context)
                 continue
 
             if action.action_type is AgentActionType.SAVE:
@@ -135,7 +138,7 @@ class AgentRunner:
         self._touch(state)
         return result
 
-    def _summarize(self, state: AgentState) -> None:
+    def _summarize(self, state: AgentState, context: ToolContext) -> None:
         read_step = self._step(state, "read")
         documents = [
             ReadDocumentOutput.model_validate(result.output)
@@ -159,6 +162,7 @@ class AgentRunner:
         step.status = PlanStepStatus.RUNNING
         state.current_step_id = "summarize"
         state.final_answer = self._summarizer.summarize(state.query, documents)
+        self._record_decision(state, self._summarizer, context)
         step.result_summary = "report generated"
         step.status = PlanStepStatus.COMPLETED
         self._touch(state)
@@ -225,3 +229,22 @@ class AgentRunner:
     @staticmethod
     def _touch(state: AgentState) -> None:
         state.updated_at = datetime.now(UTC)
+
+    def _record_decision(
+        self, state: AgentState, component: object, context: ToolContext
+    ) -> None:
+        """Copy only safe LLM decision metadata into the serializable state."""
+        decision = getattr(component, "last_decision", None)
+        if decision is None:
+            return
+        trace = DecisionTrace(
+            component=decision.component,
+            model=decision.model,
+            input_tokens=decision.input_tokens,
+            output_tokens=decision.output_tokens,
+            fallback=decision.fallback,
+        )
+        state.decision_traces.append(trace)
+        record_decision = getattr(self._executor, "record_decision", None)
+        if callable(record_decision):
+            record_decision(trace, context)

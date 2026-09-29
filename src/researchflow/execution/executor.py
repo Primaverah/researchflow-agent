@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from researchflow.domain import (
+    DecisionTrace,
     ExecutionStatus,
     ExecutionTrace,
     ToolCall,
@@ -31,6 +32,10 @@ class ToolExecutor:
         """Execute a tool call and record its result and duration."""
         result, _ = self.execute_with_trace(call, context)
         return result
+
+    def record_decision(self, decision: DecisionTrace, context: ToolContext) -> None:
+        """Persist sanitized agent decision metadata with the run trace."""
+        self._recorder.record_decision(decision, context)
 
     def execute_with_trace(
         self, call: ToolCall, context: ToolContext

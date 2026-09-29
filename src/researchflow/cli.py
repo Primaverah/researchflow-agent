@@ -12,6 +12,9 @@ from researchflow import __version__
 from researchflow.agent import (
     AgentRunner,
     ExtractiveSummarizer,
+    LLMPlanner,
+    LLMSelector,
+    LLMSummarizer,
     RulePlanner,
     StateSelector,
 )
@@ -99,15 +102,29 @@ def _run_workflow(
     documents_dir: Path,
     output_dir: Path,
     max_steps: int,
+    agent_mode: str = "rule",
 ) -> tuple[AgentState, ToolContext]:
     context = _create_context(documents_dir, output_dir)
     registry = ToolRegistry()
     for tool in create_offline_tools(context):
         registry.register(tool)
+    planner = RulePlanner()
+    selector = StateSelector()
+    summarizer = ExtractiveSummarizer()
+    if agent_mode == "llm":
+        try:
+            provider = _create_llm_provider()
+        except LLMError:
+            pass
+        else:
+            model_name = getattr(provider, "model_name", "configured-llm")
+            planner = LLMPlanner(provider, planner, model_name=model_name)
+            selector = LLMSelector(provider, selector, model_name=model_name)
+            summarizer = LLMSummarizer(provider, summarizer, model_name=model_name)
     runner = AgentRunner(
-        RulePlanner(),
-        StateSelector(),
-        ExtractiveSummarizer(),
+        planner,
+        selector,
+        summarizer,
         ToolExecutor(registry, JsonlTraceRecorder()),
         max_steps=max_steps,
     )
@@ -169,6 +186,12 @@ def _render_state(state: AgentState, context: ToolContext, *, verbose: bool) -> 
             if trace.error_type is not None:
                 detail += f" — {trace.error_type}: {trace.error_message}"
             typer.echo(detail)
+        for index, trace in enumerate(state.decision_traces, start=1):
+            fallback = " fallback" if trace.fallback else ""
+            typer.echo(
+                f"LLM {index}. {trace.component} {trace.model} "
+                f"{trace.input_tokens}/{trace.output_tokens} tokens{fallback}"
+            )
 
 
 @app.command("evaluate")
@@ -236,14 +259,20 @@ def run_agent(
         int,
         typer.Option("--max-steps", help="Maximum number of agent actions."),
     ] = 10,
+    agent_mode: Annotated[
+        str,
+        typer.Option("--agent-mode", help="Agent mode: rule (default) or llm."),
+    ] = "rule",
     verbose: Annotated[
         bool,
         typer.Option("--verbose/--no-verbose", help="Show execution details."),
     ] = False,
 ) -> None:
-    """Run one offline rule-driven research workflow."""
+    """Run one bounded local research workflow."""
     if max_steps < 1:
         _input_error("--max-steps 必须大于或等于 1")
+    if agent_mode not in {"rule", "llm"}:
+        _input_error("--agent-mode 必须为 rule 或 llm")
     resolved_query = _resolve_query(query)
     try:
         state, context = _run_workflow(
@@ -251,6 +280,7 @@ def run_agent(
             documents_dir,
             output_dir,
             max_steps,
+            agent_mode,
         )
         _render_state(state, context, verbose=verbose)
     except typer.Exit:
