@@ -37,7 +37,6 @@ class ExtractiveSummarizer:
             if document.path in seen_sources:
                 continue
             seen_sources.add(document.path)
-            sources.append((document.title, document.path))
             lines = self._meaningful_lines(document.content)
             matched = [
                 line
@@ -46,23 +45,22 @@ class ExtractiveSummarizer:
             ]
             selected = (matched or lines)[:MAX_EXTRACTS_PER_DOCUMENT]
             extracts.extend(line[:MAX_EXTRACT_LENGTH] for line in selected)
+            if selected:
+                sources.append((document.title, document.path))
 
-        verified_web_sources = [
-            source
-            for source in web_sources or []
-            if is_allowed_domain(source.url, self._allowed_domains)
-        ]
-        for source in verified_web_sources:
+        for source in web_sources or []:
+            if not is_allowed_domain(source.url, self._allowed_domains):
+                continue
             lines = self._meaningful_lines(source.content)
             matched = [
                 line
                 for line in lines
                 if terms and any(term in _normalize(line) for term in terms)
             ]
-            extracts.extend(
-                line[:MAX_EXTRACT_LENGTH]
-                for line in (matched or lines)[:MAX_EXTRACTS_PER_DOCUMENT]
-            )
+            selected = (matched or lines)[:MAX_EXTRACTS_PER_DOCUMENT]
+            extracts.extend(line[:MAX_EXTRACT_LENGTH] for line in selected)
+            if selected:
+                sources.append((source.title, source.url))
 
         summary_lines = (
             [f"- {extract}" for extract in extracts]
@@ -73,12 +71,6 @@ class ExtractiveSummarizer:
             f"[{index}] {title} — {path}"
             for index, (title, path) in enumerate(sources, start=1)
         ]
-        source_lines.extend(
-            f"[{index}] {source.title} — {source.url}"
-            for index, source in enumerate(
-                verified_web_sources, start=len(source_lines) + 1
-            )
-        )
         if not source_lines:
             source_lines = ["- 无"]
         return "\n".join(

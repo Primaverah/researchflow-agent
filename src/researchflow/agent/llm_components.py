@@ -21,16 +21,13 @@ from researchflow.llm import (
 )
 from researchflow.tools.offline import ReadDocumentOutput
 from researchflow.tools.web import WebSource
+from researchflow.tools.web.domains import is_allowed_domain
 
-_PLAN_STEPS = (
-    ("search", "search_documents"),
-    ("read", "read_document"),
-    ("summarize", None),
-    ("save", "save_note"),
-)
 _TOOL_BY_ACTION = {
     AgentActionType.SEARCH: "search_documents",
     AgentActionType.READ: "read_document",
+    AgentActionType.WEB_SEARCH: "web_search",
+    AgentActionType.FETCH_URL: "fetch_url",
     AgentActionType.SAVE: "save_note",
 }
 
@@ -51,22 +48,34 @@ class LLMDecision:
 class LLMPlanStep(BaseModel):
     """One permitted local workflow step returned by the model."""
 
-    step_id: Literal["search", "read", "summarize", "save"]
+    step_id: Literal["search", "read", "web_search", "fetch_url", "summarize", "save"]
     description: str = Field(min_length=1)
-    tool_name: Literal["search_documents", "read_document", "save_note"] | None = None
+    tool_name: (
+        Literal[
+            "search_documents", "read_document", "web_search", "fetch_url", "save_note"
+        ]
+        | None
+    ) = None
 
 
 class LLMPlanOutput(BaseModel):
     """Validated model output for research planning."""
 
-    steps: list[LLMPlanStep] = Field(min_length=4, max_length=4)
+    steps: list[LLMPlanStep] = Field(min_length=4, max_length=6)
 
 
 class LLMActionOutput(BaseModel):
     """Validated model output for selecting one action."""
 
-    action_type: Literal["search", "read", "summarize", "save", "finish"]
-    tool_name: Literal["search_documents", "read_document", "save_note"] | None = None
+    action_type: Literal[
+        "search", "read", "web_search", "fetch_url", "summarize", "save", "finish"
+    ]
+    tool_name: (
+        Literal[
+            "search_documents", "read_document", "web_search", "fetch_url", "save_note"
+        ]
+        | None
+    ) = None
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -128,18 +137,22 @@ class LLMPlanner(_LLMComponent):
         self._fallback_planner = fallback
 
     def create_plan(self, query: str) -> ResearchPlan:
+        expected_plan = self._fallback_planner.create_plan(query)
+        expected_steps = tuple(
+            (step.step_id, step.tool_name) for step in expected_plan.steps
+        )
         try:
             output = self._complete(
-                "Create a local research plan as JSON with exactly these ordered "
-                "steps: search/search_documents, read/read_document, summarize, "
-                f"save/save_note. Query: {query}",
+                "Create a research plan as JSON with exactly these ordered steps: "
+                + json.dumps(expected_steps)
+                + f". Query: {query}",
                 LLMPlanOutput,
             )
             assert isinstance(output, LLMPlanOutput)
-            self._validate_plan(output)
+            self._validate_plan(output, expected_steps)
         except (LLMError, ValidationError, ValueError) as exc:
             self._fallback("planner", exc)
-            return self._fallback_planner.create_plan(query)
+            return expected_plan
         assert self.last_decision is not None
         self.last_decision = LLMDecision(
             component="planner",
@@ -161,10 +174,12 @@ class LLMPlanner(_LLMComponent):
         )
 
     @staticmethod
-    def _validate_plan(output: LLMPlanOutput) -> None:
+    def _validate_plan(
+        output: LLMPlanOutput, expected_steps: tuple[tuple[str, str | None], ...]
+    ) -> None:
         actual = tuple((step.step_id, step.tool_name) for step in output.steps)
-        if actual != _PLAN_STEPS:
-            raise ValueError("LLM plan must use the fixed local workflow")
+        if actual != expected_steps:
+            raise ValueError("LLM plan must use the fixed safe workflow")
 
 
 class LLMSelector(_LLMComponent):
@@ -184,8 +199,8 @@ class LLMSelector(_LLMComponent):
         fallback_action = self._fallback_selector.select(state)
         try:
             output = self._complete(
-                "Choose the next local action as JSON. Only search_documents, "
-                "read_document, and save_note are permitted. State: "
+                "Choose the next safe workflow action as JSON. It must exactly "
+                "match the permitted fallback action. State: "
                 + json.dumps(self._state_prompt(state), ensure_ascii=False),
                 LLMActionOutput,
             )
@@ -243,6 +258,12 @@ class LLMSelector(_LLMComponent):
             }
             if action.arguments.get("path") not in allowed_paths:
                 raise ValueError("LLM read path was not returned by search")
+        elif action.action_type is AgentActionType.WEB_SEARCH:
+            if action.arguments != fallback.arguments:
+                raise ValueError("LLM web search must use the safe query and limit")
+        elif action.action_type is AgentActionType.FETCH_URL:
+            if action.arguments != fallback.arguments:
+                raise ValueError("LLM fetch must use an approved search result")
         elif action.action_type is AgentActionType.SAVE:
             if action.arguments != fallback.arguments:
                 raise ValueError("LLM save arguments must use the safe report path")
@@ -259,9 +280,11 @@ class LLMSummarizer(_LLMComponent):
         fallback: ExtractiveSummarizer,
         *,
         model_name: str,
+        allowed_domains: tuple[str, ...] = (),
     ) -> None:
         super().__init__(provider, model_name)
         self._fallback_summarizer = fallback
+        self._allowed_domains = allowed_domains
 
     def summarize(
         self,
@@ -269,24 +292,36 @@ class LLMSummarizer(_LLMComponent):
         documents: list[ReadDocumentOutput],
         web_sources: list[WebSource] | None = None,
     ) -> str:
+        verified_web_sources = [
+            source
+            for source in web_sources or []
+            if is_allowed_domain(source.url, self._allowed_domains)
+        ]
+        evidence = [
+            {
+                "source": document.path,
+                "title": document.title,
+                "content": document.content,
+            }
+            for document in documents
+        ]
+        evidence.extend(
+            {
+                "source": source.url,
+                "title": source.title,
+                "content": source.content,
+            }
+            for source in verified_web_sources
+        )
         try:
             output = self._complete(
-                "Summarize only these successfully read local documents as JSON: "
-                + json.dumps(
-                    [
-                        {
-                            "path": document.path,
-                            "title": document.title,
-                            "content": document.content,
-                        }
-                        for document in documents
-                    ],
-                    ensure_ascii=False,
-                ),
+                "Summarize only these successfully read sources as JSON. Cite only "
+                "their source values in source_paths: "
+                + json.dumps(evidence, ensure_ascii=False),
                 LLMSummaryOutput,
             )
             assert isinstance(output, LLMSummaryOutput)
-            allowed_paths = {document.path for document in documents}
+            allowed_paths = {item["source"] for item in evidence}
             if not set(output.source_paths).issubset(allowed_paths):
                 raise ValueError("LLM cited a source that was not read")
         except (LLMError, ValidationError, ValueError) as exc:
@@ -299,10 +334,11 @@ class LLMSummarizer(_LLMComponent):
             input_tokens=self.last_decision.input_tokens,
             output_tokens=self.last_decision.output_tokens,
         )
+        citations = set(output.source_paths)
         source_lines = [
-            f"- {document.title} — {document.path}"
-            for document in documents
-            if document.path in set(output.source_paths)
+            f"- {item['title']} — {item['source']}"
+            for item in evidence
+            if item["source"] in citations
         ]
         if not source_lines:
             source_lines = ["- 无"]

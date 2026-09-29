@@ -46,6 +46,35 @@ def test_fetch_accepts_public_html_and_extracts_title_and_text() -> None:
     assert page.content == "Hello world"
 
 
+def test_fetch_prefers_main_content_and_discards_page_chrome() -> None:
+    client = SafeHttpClient(
+        opener=lambda url, timeout: FakeResponse(
+            (
+                b"<html><head><title>Official guide</title>"
+                b"<style>.ad{display:none}</style>"
+                b'<script type="application/ld+json">{"name":"metadata"}</script>'
+                b"</head><body><nav>Navigation links</nav>"
+                b'<aside>Advertisement</aside><div class="advertisement">Buy now</div>'
+                b"<main><article>"
+                b"<h1>Python guide</h1><p>Official evidence belongs here.</p>"
+                b"</article></main><footer>Copyright metadata</footer>"
+                b"<script>window.tracker = true</script></body></html>"
+            ),
+            "text/html",
+            url,
+        ),
+        resolver=public_resolver,
+    )
+
+    page = client.fetch("https://docs.python.org/guide")
+
+    assert page.content == "Python guide Official evidence belongs here."
+    assert "Navigation" not in page.content
+    assert "Advertisement" not in page.content
+    assert "Buy now" not in page.content
+    assert "metadata" not in page.content
+
+
 @pytest.mark.parametrize("url", ["file:///etc/passwd", "http://localhost/x"])
 def test_fetch_rejects_unsafe_urls(url: str) -> None:
     client = SafeHttpClient(opener=lambda *_: None, resolver=public_resolver)

@@ -106,6 +106,7 @@ class AgentRunner:
                 continue
 
             state.current_step_id = None
+            self._converge_plan(state)
             state.status = (
                 AgentStatus.FAILED
                 if self._search_failed(state)
@@ -136,16 +137,17 @@ class AgentRunner:
         state.tool_results.append(result)
         state.traces.append(trace)
 
-        if step_id in {"search", "save"}:
-            if result.success:
-                step.result_summary = f"{action.tool_name} completed"
-                step.status = PlanStepStatus.COMPLETED
-            else:
-                self._mark_failed(
-                    state,
-                    step_id,
-                    result.error_message or "tool execution failed",
-                )
+        if result.success:
+            step.result_summary = f"{action.tool_name} completed"
+            step.status = PlanStepStatus.COMPLETED
+        elif step_id in {"search", "web_search", "save"}:
+            self._mark_failed(
+                state,
+                step_id,
+                result.error_message or "tool execution failed",
+            )
+        else:
+            step.status = PlanStepStatus.PENDING
         self._touch(state)
         return result
 
@@ -221,6 +223,16 @@ class AgentRunner:
             result.tool_name == "search_documents" and not result.success
             for result in state.tool_results
         )
+
+    @staticmethod
+    def _converge_plan(state: AgentState) -> None:
+        """Ensure a completed run cannot retain an active plan step."""
+        if state.plan is None:
+            return
+        for step in state.plan.steps:
+            if step.status in {PlanStepStatus.PENDING, PlanStepStatus.RUNNING}:
+                step.status = PlanStepStatus.SKIPPED
+                step.result_summary = "not completed before agent finished"
 
     @staticmethod
     def _step(state: AgentState, step_id: str) -> PlanStep:

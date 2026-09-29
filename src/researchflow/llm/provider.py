@@ -1,5 +1,6 @@
 """OpenAI-compatible provider with validated JSON output."""
 
+import json
 from abc import ABC, abstractmethod
 from typing import Protocol, TypeVar
 
@@ -26,13 +27,31 @@ class BaseLLMProvider(ABC):
         for attempt in range(2):
             response = self.complete(request)
             try:
-                return schema.model_validate_json(response.content), response.usage
+                return self._validate_structured(
+                    response.content, schema
+                ), response.usage
             except (ValidationError, ValueError) as exc:
                 if attempt:
                     raise LLMStructuredOutputError(
                         "LLM returned invalid structured output"
                     ) from exc
         raise AssertionError("unreachable")
+
+    @staticmethod
+    def _validate_structured(content: str, schema: type[T]) -> T:
+        """Validate JSON, tolerating a Markdown fence from compatible APIs."""
+        try:
+            return schema.model_validate_json(content)
+        except (ValidationError, ValueError):
+            pass
+
+        fenced = content.strip()
+        if fenced.startswith("```") and fenced.endswith("```"):
+            fenced = fenced.split("\n", 1)[1].rsplit("\n", 1)[0]
+        decoded, end = json.JSONDecoder().raw_decode(fenced.lstrip())
+        if fenced.lstrip()[end:].strip():
+            raise ValueError("structured response contains trailing text")
+        return schema.model_validate(decoded)
 
 
 class OpenAICompatibleProvider(BaseLLMProvider):

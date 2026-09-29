@@ -35,24 +35,68 @@ class HtmlPage:
 
 
 class _TextExtractor(HTMLParser):
+    _IGNORED_TAGS = {"script", "style", "noscript", "template", "svg"}
+    _CHROME_TAGS = {"nav", "aside", "header", "footer", "form"}
+    _PRIMARY_TAGS = {"main", "article"}
+    _CHROME_TOKENS = {"ad", "ads", "advert", "advertisement", "banner", "cookie"}
+
     def __init__(self) -> None:
         super().__init__()
         self._in_title = False
         self._title: list[str] = []
-        self._text: list[str] = []
+        self._fallback_text: list[str] = []
+        self._primary_text: list[str] = []
+        self._ignored_depth = 0
+        self._chrome_depth = 0
+        self._chrome_marker_tags: list[str] = []
+        self._primary_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._in_title = tag == "title"
+        normalized = tag.lower()
+        self._in_title = normalized == "title"
+        if normalized in self._IGNORED_TAGS:
+            self._ignored_depth += 1
+        elif normalized in self._CHROME_TAGS or self._has_chrome_marker(attrs):
+            self._chrome_depth += 1
+            self._chrome_marker_tags.append(normalized)
+        elif normalized in self._PRIMARY_TAGS:
+            self._primary_depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "title":
+        normalized = tag.lower()
+        if normalized == "title":
             self._in_title = False
+        if normalized in self._IGNORED_TAGS and self._ignored_depth:
+            self._ignored_depth -= 1
+        elif self._chrome_marker_tags and self._chrome_marker_tags[-1] == normalized:
+            self._chrome_marker_tags.pop()
+            self._chrome_depth -= 1
+        elif normalized in self._PRIMARY_TAGS and self._primary_depth:
+            self._primary_depth -= 1
 
     def handle_data(self, data: str) -> None:
         if self._in_title:
             self._title.append(data)
-        else:
-            self._text.append(data)
+        elif not self._ignored_depth and not self._chrome_depth:
+            target = self._primary_text if self._primary_depth else self._fallback_text
+            target.append(data)
+
+    @classmethod
+    def _has_chrome_marker(cls, attrs: list[tuple[str, str | None]]) -> bool:
+        for name, value in attrs:
+            if name.lower() not in {"class", "id", "role"} or value is None:
+                continue
+            tokens = {token.casefold() for token in value.replace("-", " ").split()}
+            if (
+                tokens & cls._CHROME_TOKENS
+                or {"navigation", "menu", "sidebar"} & tokens
+            ):
+                return True
+        return False
 
     @property
     def title(self) -> str:
@@ -60,7 +104,8 @@ class _TextExtractor(HTMLParser):
 
     @property
     def content(self) -> str:
-        return " ".join(" ".join(self._text).split())
+        text = self._primary_text or self._fallback_text
+        return " ".join(" ".join(text).split())
 
 
 class SafeHttpClient:

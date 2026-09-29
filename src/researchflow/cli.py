@@ -122,7 +122,7 @@ def _run_workflow(
     summarizer = ExtractiveSummarizer(allowed_domains=allowed_domains)
     if enable_web:
         provider = TavilySearchProvider.from_environment()
-        for tool in create_web_tools(provider):
+        for tool in create_web_tools(provider, allowed_domains=allowed_domains):
             registry.register(tool)
         planner = WebRulePlanner()
         selector = WebStateSelector(allowed_domains=allowed_domains)
@@ -135,7 +135,12 @@ def _run_workflow(
             model_name = getattr(provider, "model_name", "configured-llm")
             planner = LLMPlanner(provider, planner, model_name=model_name)
             selector = LLMSelector(provider, selector, model_name=model_name)
-            summarizer = LLMSummarizer(provider, summarizer, model_name=model_name)
+            summarizer = LLMSummarizer(
+                provider,
+                summarizer,
+                model_name=model_name,
+                allowed_domains=allowed_domains,
+            )
     runner = AgentRunner(
         planner,
         selector,

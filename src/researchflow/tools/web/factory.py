@@ -7,6 +7,11 @@ from researchflow.tools.web.tools import FetchUrlTool, WebSearchTool
 
 
 def create_web_tools(
-    provider: WebSearchProvider, client: SafeHttpClient | None = None
+    provider: WebSearchProvider,
+    client: SafeHttpClient | None = None,
+    allowed_domains: tuple[str, ...] = (),
 ) -> tuple[BaseTool, ...]:
-    return (WebSearchTool(provider), FetchUrlTool(client or SafeHttpClient()))
+    return (
+        WebSearchTool(provider, allowed_domains),
+        FetchUrlTool(client or SafeHttpClient(), allowed_domains),
+    )

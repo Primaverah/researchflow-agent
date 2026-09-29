@@ -53,3 +53,15 @@ def test_structured_response_retries_invalid_json_once() -> None:
     assert result == CheckResult(status="ok")
     assert usage.output_tokens == 1
     assert provider.calls == 2
+
+
+def test_structured_response_accepts_json_fenced_by_compatible_provider() -> None:
+    provider = FakeProvider(['```json\n{"status": "ok"}\n```'])
+
+    result, usage = provider.complete_structured(
+        LLMRequest(user_prompt="check"), CheckResult
+    )
+
+    assert result == CheckResult(status="ok")
+    assert usage.output_tokens == 1
+    assert provider.calls == 1
