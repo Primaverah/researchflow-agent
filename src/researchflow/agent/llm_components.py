@@ -12,7 +12,13 @@ from researchflow.agent.planner import RulePlanner
 from researchflow.agent.selector import StateSelector
 from researchflow.agent.summarizer import ExtractiveSummarizer
 from researchflow.domain import AgentState, PlanStep, ResearchPlan
-from researchflow.llm import BaseLLMProvider, LLMError, LLMRequest
+from researchflow.llm import (
+    BaseLLMProvider,
+    LLMConfigurationError,
+    LLMError,
+    LLMRequest,
+    LLMStructuredOutputError,
+)
 from researchflow.tools.offline import ReadDocumentOutput
 from researchflow.tools.web import WebSource
 
@@ -38,6 +44,8 @@ class LLMDecision:
     input_tokens: int
     output_tokens: int
     fallback: bool = False
+    fallback_reason: str | None = None
+    error_type: str | None = None
 
 
 class LLMPlanStep(BaseModel):
@@ -87,13 +95,22 @@ class _LLMComponent:
         )
         return result
 
-    def _fallback(self, component: str) -> None:
+    def _fallback(self, component: str, error: Exception) -> None:
+        reason = (
+            "configuration_error"
+            if isinstance(error, LLMConfigurationError)
+            else "structured_output_invalid"
+            if isinstance(error, LLMStructuredOutputError)
+            else "provider_error"
+        )
         self.last_decision = LLMDecision(
             component=component,
             model=self._model_name,
             input_tokens=0,
             output_tokens=0,
             fallback=True,
+            fallback_reason=reason,
+            error_type=type(error).__name__,
         )
 
 
@@ -120,8 +137,8 @@ class LLMPlanner(_LLMComponent):
             )
             assert isinstance(output, LLMPlanOutput)
             self._validate_plan(output)
-        except (LLMError, ValidationError, ValueError):
-            self._fallback("planner")
+        except (LLMError, ValidationError, ValueError) as exc:
+            self._fallback("planner", exc)
             return self._fallback_planner.create_plan(query)
         assert self.last_decision is not None
         self.last_decision = LLMDecision(
@@ -179,8 +196,8 @@ class LLMSelector(_LLMComponent):
                 arguments=output.arguments,
             )
             self._validate_action(action, fallback_action, state)
-        except (LLMError, ValidationError, ValueError):
-            self._fallback("selector")
+        except (LLMError, ValidationError, ValueError) as exc:
+            self._fallback("selector", exc)
             return fallback_action
         assert self.last_decision is not None
         self.last_decision = LLMDecision(
@@ -272,8 +289,8 @@ class LLMSummarizer(_LLMComponent):
             allowed_paths = {document.path for document in documents}
             if not set(output.source_paths).issubset(allowed_paths):
                 raise ValueError("LLM cited a source that was not read")
-        except (LLMError, ValidationError, ValueError):
-            self._fallback("summarizer")
+        except (LLMError, ValidationError, ValueError) as exc:
+            self._fallback("summarizer", exc)
             return self._fallback_summarizer.summarize(query, documents, web_sources)
         assert self.last_decision is not None
         self.last_decision = LLMDecision(

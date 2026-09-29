@@ -116,7 +116,16 @@ def test_llm_workflow_records_sanitized_decisions_and_saves_only_read_source(
     ]
     assert len(decisions) == 7
     assert all(
-        set(record) == {"event_type", "component", "model", "usage", "fallback"}
+        set(record)
+        == {
+            "event_type",
+            "component",
+            "model",
+            "usage",
+            "fallback",
+            "fallback_reason",
+            "error_type",
+        }
         for record in decisions
     )
     assert "secret" not in json.dumps(decisions)

@@ -44,6 +44,8 @@ class JsonlTraceRecorder:
                     "output_tokens": decision.output_tokens,
                 },
                 "fallback": decision.fallback,
+                "fallback_reason": decision.fallback_reason,
+                "error_type": decision.error_type,
             },
             context,
         )
