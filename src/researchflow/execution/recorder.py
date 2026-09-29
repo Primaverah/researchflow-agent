@@ -4,7 +4,7 @@ import json
 from pathlib import Path, PureWindowsPath
 from typing import Protocol
 
-from researchflow.domain import ExecutionTrace
+from researchflow.domain import DecisionTrace, ExecutionTrace
 from researchflow.execution.errors import TraceRecordingError
 from researchflow.tools import ToolContext, UnsafePathError, resolve_safe_path
 
@@ -16,6 +16,10 @@ class TraceRecorder(Protocol):
         """Persist one completed trace."""
         ...
 
+    def record_decision(self, decision: DecisionTrace, context: ToolContext) -> None:
+        """Persist sanitized LLM decision metadata."""
+        ...
+
 
 class JsonlTraceRecorder:
     """Append one JSON object per line to a run-specific trace file."""
@@ -25,7 +29,26 @@ class JsonlTraceRecorder:
         self._validate_run_id(context.run_id)
         if trace.run_id != context.run_id:
             raise TraceRecordingError("trace run_id does not match the tool context")
+        self._append_payload(trace.model_dump(mode="json"), context)
 
+    def record_decision(self, decision: DecisionTrace, context: ToolContext) -> None:
+        """Append safe LLM decision metadata without prompts or model output."""
+        self._validate_run_id(context.run_id)
+        self._append_payload(
+            {
+                "event_type": "llm_decision",
+                "component": decision.component,
+                "model": decision.model,
+                "usage": {
+                    "input_tokens": decision.input_tokens,
+                    "output_tokens": decision.output_tokens,
+                },
+                "fallback": decision.fallback,
+            },
+            context,
+        )
+
+    def _append_payload(self, payload_data: object, context: ToolContext) -> None:
         try:
             traces_directory = context.output_directory / "traces"
             traces_directory.mkdir(parents=True, exist_ok=True)
@@ -37,7 +60,7 @@ class JsonlTraceRecorder:
                 f"{context.run_id}.jsonl",
             )
             payload = json.dumps(
-                trace.model_dump(mode="json"),
+                payload_data,
                 ensure_ascii=False,
                 separators=(",", ":"),
             )

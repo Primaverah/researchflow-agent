@@ -164,6 +164,16 @@ class ExecutionTrace(DomainModel):
         return self
 
 
+class DecisionTrace(DomainModel):
+    """Sanitized metadata for one planner, selector, or summarizer decision."""
+
+    component: NonEmptyString
+    model: NonEmptyString
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    fallback: bool = False
+
+
 class AgentState(DomainModel):
     """A serializable snapshot of one research run."""
 
@@ -175,6 +185,7 @@ class AgentState(DomainModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tool_results: list[ToolResult] = Field(default_factory=list)
     traces: list[ExecutionTrace] = Field(default_factory=list)
+    decision_traces: list[DecisionTrace] = Field(default_factory=list)
     final_answer: NonEmptyString | None = None
     created_at: AwareDatetime = Field(default_factory=utc_now)
     updated_at: AwareDatetime = Field(default_factory=utc_now)

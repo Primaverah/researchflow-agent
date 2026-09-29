@@ -40,6 +40,11 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         self._config = config
         self._client = None
 
+    @property
+    def model_name(self) -> str:
+        """Return the configured model name without exposing credentials."""
+        return self._config.model
+
     def complete(self, request: LLMRequest) -> LLMResponse:
         try:
             if self._client is None:

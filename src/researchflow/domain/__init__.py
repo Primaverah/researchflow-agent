@@ -3,6 +3,7 @@
 from researchflow.domain.models import (
     AgentState,
     AgentStatus,
+    DecisionTrace,
     ExecutionStatus,
     ExecutionTrace,
     PlanStep,
@@ -16,6 +17,7 @@ from researchflow.domain.models import (
 __all__ = [
     "AgentState",
     "AgentStatus",
+    "DecisionTrace",
     "ExecutionStatus",
     "ExecutionTrace",
     "PlanStep",
