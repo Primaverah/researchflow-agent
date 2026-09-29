@@ -19,6 +19,9 @@ dependencies = [
 embedding = [
     "sentence-transformers>=3,<4",
 ]
+llm = [
+    "openai>=1,<2",
+]
 
 [project.scripts]
 researchflow = "researchflow.cli:app"

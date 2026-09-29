@@ -97,6 +97,14 @@ maximum steps: 10
 
 ## CLI Usage
 
+### Optional LLM configuration check
+
+Install the optional client with `uv sync --extra llm`, copy `.env.example` to
+`.env`, then set `RESEARCHFLOW_LLM_API_KEY`, `RESEARCHFLOW_LLM_BASE_URL`,
+`RESEARCHFLOW_LLM_MODEL`, and `RESEARCHFLOW_LLM_TIMEOUT`. Run
+`uv run researchflow llm-check` to validate a structured response. Keys are
+read only from the environment and are never recorded in traces or output.
+
 Evaluate the deterministic bilingual retrieval baselines:
 
 ```bash

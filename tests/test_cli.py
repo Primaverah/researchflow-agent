@@ -8,10 +8,19 @@ from typer.testing import CliRunner
 
 from researchflow import __version__, cli
 from researchflow.cli import app
+from researchflow.llm import BaseLLMProvider, LLMResponse, TokenUsage
 from researchflow.tools import ToolFailure
 from researchflow.tools.offline import FileSystemNoteStore
 
 runner = CliRunner()
+
+
+class FakeCheckProvider(BaseLLMProvider):
+    def complete(self, request):
+        return LLMResponse(
+            content='{"status":"ok"}',
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
 
 
 @pytest.fixture
@@ -70,6 +79,18 @@ def test_version_is_available() -> None:
 
     assert result.exit_code == 0
     assert result.stdout.strip() == f"researchflow {__version__}"
+
+
+def test_llm_check_uses_structured_fake_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "_create_llm_provider", FakeCheckProvider)
+
+    result = runner.invoke(app, ["llm-check"])
+
+    assert result.exit_code == 0
+    assert "status: ok" in result.stdout
+    assert "input_tokens: 1" in result.stdout
 
 
 def test_evaluate_outputs_all_retrievers_and_writes_utf8_json(

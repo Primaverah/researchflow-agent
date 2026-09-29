@@ -6,6 +6,7 @@ from typing import Annotated
 from uuid import uuid4
 
 import typer
+from pydantic import BaseModel
 
 from researchflow import __version__
 from researchflow.agent import (
@@ -17,6 +18,7 @@ from researchflow.agent import (
 from researchflow.domain import AgentState, AgentStatus, ToolResult
 from researchflow.evaluation import evaluate_retriever
 from researchflow.execution import JsonlTraceRecorder, ToolExecutor
+from researchflow.llm import LLMConfig, LLMError, LLMRequest, OpenAICompatibleProvider
 from researchflow.tools import ToolContext, ToolRegistry
 from researchflow.tools.offline import create_offline_tools
 
@@ -25,6 +27,14 @@ app = typer.Typer(
     help="Research technical topics with local documents and offline tools.",
     no_args_is_help=True,
 )
+
+
+class LLMCheckOutput(BaseModel):
+    status: str
+
+
+def _create_llm_provider() -> OpenAICompatibleProvider:
+    return OpenAICompatibleProvider(LLMConfig.from_environment())
 
 
 def version_callback(value: bool) -> None:
@@ -191,6 +201,21 @@ def evaluate(
         except OSError:
             _input_error("评测结果无法保存")
     typer.echo(rendered)
+
+
+@app.command("llm-check")
+def llm_check() -> None:
+    """Validate optional LLM configuration and structured JSON output."""
+    try:
+        result, usage = _create_llm_provider().complete_structured(
+            LLMRequest(user_prompt='Return JSON exactly: {"status":"ok"}'),
+            LLMCheckOutput,
+        )
+    except LLMError as exc:
+        _input_error(str(exc))
+    typer.echo(f"status: {result.status}")
+    typer.echo(f"input_tokens: {usage.input_tokens}")
+    typer.echo(f"output_tokens: {usage.output_tokens}")
 
 
 @app.command("run")
