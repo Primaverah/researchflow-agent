@@ -184,6 +184,18 @@ def test_llm_agent_mode_falls_back_to_rule_mode_without_configuration(
     assert "llm_decision" not in trace.read_text(encoding="utf-8")
 
 
+def test_web_mode_requires_explicit_search_configuration(
+    cli_paths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    documents, output = cli_paths
+    monkeypatch.delenv("RESEARCHFLOW_SEARCH_API_KEY", raising=False)
+
+    result = invoke_run(documents, output, "--enable-web")
+
+    assert result.exit_code == 2
+    assert "SEARCH_API_KEY" in result.stderr
+
+
 def test_evaluate_outputs_all_retrievers_and_writes_utf8_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

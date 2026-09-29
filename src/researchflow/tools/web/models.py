@@ -25,3 +25,18 @@ class WebSource(BaseModel):
     summary: str = ""
     accessed_at: datetime
     content: str = Field(min_length=1)
+
+
+class WebSearchArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1)
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class FetchUrlArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    summary: str = ""

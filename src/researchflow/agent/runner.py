@@ -18,6 +18,7 @@ from researchflow.domain import (
 from researchflow.execution import ToolExecutor
 from researchflow.tools import ToolContext
 from researchflow.tools.offline import ReadDocumentOutput
+from researchflow.tools.web import WebSource
 
 MAX_STEPS_MESSAGE = "Agent 已达到最大步骤限制，研究流程已停止。"
 
@@ -78,6 +79,16 @@ class AgentRunner:
             if action.action_type is AgentActionType.READ:
                 call_count += 1
                 self._execute_tool(state, action, context, call_count, "read")
+                continue
+
+            if action.action_type is AgentActionType.WEB_SEARCH:
+                call_count += 1
+                self._execute_tool(state, action, context, call_count, "web_search")
+                continue
+
+            if action.action_type is AgentActionType.FETCH_URL:
+                call_count += 1
+                self._execute_tool(state, action, context, call_count, "fetch_url")
                 continue
 
             if action.action_type is AgentActionType.SUMMARIZE:
@@ -145,6 +156,11 @@ class AgentRunner:
             for result in state.tool_results
             if result.tool_name == "read_document" and result.success
         ]
+        web_sources = [
+            WebSource.model_validate(result.output)
+            for result in state.tool_results
+            if result.tool_name == "fetch_url" and result.success
+        ]
         search_result = next(
             result
             for result in state.tool_results
@@ -161,7 +177,9 @@ class AgentRunner:
         step = self._step(state, "summarize")
         step.status = PlanStepStatus.RUNNING
         state.current_step_id = "summarize"
-        state.final_answer = self._summarizer.summarize(state.query, documents)
+        state.final_answer = self._summarizer.summarize(
+            state.query, documents, web_sources
+        )
         self._record_decision(state, self._summarizer, context)
         step.result_summary = "report generated"
         step.status = PlanStepStatus.COMPLETED

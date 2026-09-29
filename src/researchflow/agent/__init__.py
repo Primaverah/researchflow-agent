@@ -5,6 +5,7 @@ from researchflow.agent.planner import RulePlanner
 from researchflow.agent.runner import AgentRunner
 from researchflow.agent.selector import StateSelector
 from researchflow.agent.summarizer import ExtractiveSummarizer
+from researchflow.agent.web import WebRulePlanner, WebStateSelector
 
 __all__ = [
     "AgentRunner",
@@ -14,4 +15,6 @@ __all__ = [
     "LLMSummarizer",
     "RulePlanner",
     "StateSelector",
+    "WebRulePlanner",
+    "WebStateSelector",
 ]
