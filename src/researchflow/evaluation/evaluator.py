@@ -59,9 +59,9 @@ def evaluate_retriever(
             elif name == "bm25":
                 hits = Bm25SearchBackend(source).search(case.query, 5)
             else:
-                embedding = EmbeddingRetriever(
-                    documents, embedding_provider
-                ).search(case.query, 5)
+                embedding = EmbeddingRetriever(documents, embedding_provider).search(
+                    case.query, 5
+                )
                 hits = (
                     embedding
                     if name == "embedding"
