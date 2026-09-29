@@ -4,6 +4,7 @@ from researchflow.agent.models import AgentAction, AgentActionType
 from researchflow.agent.planner import RulePlanner
 from researchflow.agent.selector import StateSelector
 from researchflow.domain import AgentState, PlanStep, ResearchPlan
+from researchflow.tools.web.domains import is_allowed_domain
 
 
 class WebRulePlanner(RulePlanner):
@@ -29,6 +30,15 @@ class WebRulePlanner(RulePlanner):
 
 
 class WebStateSelector(StateSelector):
+    def __init__(
+        self,
+        *args: object,
+        allowed_domains: tuple[str, ...] = (),
+        **kwargs: object,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._allowed_domains = allowed_domains
+
     def select(self, state: AgentState) -> AgentAction:
         action = super().select(state)
         if action.action_type is not AgentActionType.SUMMARIZE:
@@ -48,7 +58,11 @@ class WebStateSelector(StateSelector):
             }
             for item in (search_result.output or {}).get("results", []):
                 url = item.get("url") if isinstance(item, dict) else None
-                if isinstance(url, str) and url not in attempted:
+                if (
+                    isinstance(url, str)
+                    and url not in attempted
+                    and is_allowed_domain(url, self._allowed_domains)
+                ):
                     return AgentAction(
                         AgentActionType.FETCH_URL,
                         tool_name="fetch_url",

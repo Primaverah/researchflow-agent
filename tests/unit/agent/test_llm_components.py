@@ -7,7 +7,13 @@ from researchflow.agent.planner import RulePlanner
 from researchflow.agent.selector import StateSelector
 from researchflow.agent.summarizer import ExtractiveSummarizer
 from researchflow.domain import AgentState, AgentStatus
-from researchflow.llm import BaseLLMProvider, LLMRequest, LLMResponse, TokenUsage
+from researchflow.llm import (
+    BaseLLMProvider,
+    LLMRequest,
+    LLMResponse,
+    LLMStructuredOutputError,
+    TokenUsage,
+)
 from researchflow.tools.offline import ReadDocumentOutput
 
 
@@ -159,3 +165,17 @@ def test_llm_summarizer_falls_back_when_model_cites_an_unread_source() -> None:
     assert "unread.md" not in report
     assert summarizer.last_decision is not None
     assert summarizer.last_decision.fallback is True
+
+
+def test_llm_fallback_records_safe_reason_without_raw_provider_message() -> None:
+    class FailingProvider(BaseLLMProvider):
+        def complete(self, request: LLMRequest) -> LLMResponse:
+            raise LLMStructuredOutputError("raw response contains secret")
+
+    planner = LLMPlanner(FailingProvider(), RulePlanner(), model_name="fake-model")
+
+    planner.create_plan("tool calling")
+
+    assert planner.last_decision is not None
+    assert planner.last_decision.fallback_reason == "structured_output_invalid"
+    assert planner.last_decision.error_type == "LLMStructuredOutputError"

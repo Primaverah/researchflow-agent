@@ -1,7 +1,10 @@
 """Tests for deterministic extractive summarization."""
 
+from datetime import UTC, datetime
+
 from researchflow.agent import ExtractiveSummarizer
 from researchflow.tools.offline import ReadDocumentOutput
+from researchflow.tools.web import WebSource
 
 
 def document(path: str, title: str, content: str) -> ReadDocumentOutput:
@@ -42,3 +45,22 @@ def test_no_documents_has_no_sources() -> None:
 
     assert "未找到相关文档" in report
     assert "## 来源\n\n- 无" in report
+
+
+def test_summarizer_uses_successfully_fetched_web_source_as_evidence() -> None:
+    report = ExtractiveSummarizer().summarize(
+        "Python feature",
+        [],
+        [
+            WebSource(
+                title="Python docs",
+                url="https://docs.python.org/3/whatsnew/3.13.html",
+                summary="",
+                accessed_at=datetime.now(UTC),
+                content="Python feature evidence from the official documentation.",
+            )
+        ],
+    )
+
+    assert "Python feature evidence" in report
+    assert "[1] Python docs — https://docs.python.org" in report

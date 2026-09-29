@@ -48,9 +48,7 @@ class FetchUrlTool(BaseTool):
         try:
             page = self._client.fetch(parsed.url)
         except WebFetchError as exc:
-            raise ToolFailure(
-                "web page fetch failed", error_type="web_fetch_failed"
-            ) from exc
+            raise ToolFailure(str(exc), error_type=exc.error_type) from exc
         return WebSource(
             title=page.title or parsed.title,
             url=page.url,

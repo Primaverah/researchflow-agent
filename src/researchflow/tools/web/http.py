@@ -5,6 +5,7 @@ import socket
 from collections.abc import Callable
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, build_opener
 
@@ -12,10 +13,14 @@ from urllib.request import HTTPRedirectHandler, build_opener
 class WebFetchError(RuntimeError):
     """Safe failure raised for rejected or unreadable web pages."""
 
+    def __init__(self, message: str, error_type: str = "web_fetch_failed") -> None:
+        super().__init__(message)
+        self.error_type = error_type
+
 
 class _RejectRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args: object, **kwargs: object) -> object:
-        raise WebFetchError("web redirects are not supported")
+        raise WebFetchError("web redirects are not supported", "web_redirect_rejected")
 
 
 def _default_opener(url: str, timeout: float) -> object:
@@ -83,21 +88,29 @@ class SafeHttpClient:
                 self._validate_url(final_url)
                 content_type = response.headers.get_content_type()
                 if content_type != "text/html":
-                    raise WebFetchError("web response is not HTML")
+                    raise WebFetchError("web response is not HTML", "web_content_type")
                 body = response.read(self._max_bytes + 1)
         except WebFetchError:
             raise
+        except TimeoutError as exc:
+            raise WebFetchError("web page request timed out", "web_timeout") from exc
+        except HTTPError as exc:
+            raise WebFetchError(
+                "web page returned an HTTP error", "web_http_status"
+            ) from exc
         except OSError as exc:
-            raise WebFetchError("web page request failed") from exc
+            raise WebFetchError("web page request failed", "web_network_error") from exc
         if len(body) > self._max_bytes:
-            raise WebFetchError("web response is too large")
+            raise WebFetchError("web response is too large", "web_response_too_large")
         try:
             parser = _TextExtractor()
             parser.feed(body.decode("utf-8", errors="replace"))
         except (ValueError, UnicodeError) as exc:
-            raise WebFetchError("web page could not be read") from exc
+            raise WebFetchError(
+                "web page could not be read", "web_content_decode"
+            ) from exc
         if not parser.content:
-            raise WebFetchError("web page has no readable text")
+            raise WebFetchError("web page has no readable text", "web_empty_content")
         return HtmlPage(title=parser.title, content=parser.content, url=final_url)
 
     def _validate_url(self, url: str) -> None:

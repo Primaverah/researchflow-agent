@@ -5,6 +5,7 @@ import unicodedata
 
 from researchflow.tools.offline import ReadDocumentOutput
 from researchflow.tools.web import WebSource
+from researchflow.tools.web.domains import is_allowed_domain
 
 MAX_EXTRACTS_PER_DOCUMENT = 2
 MAX_EXTRACT_LENGTH = 240
@@ -16,6 +17,9 @@ def _normalize(text: str) -> str:
 
 class ExtractiveSummarizer:
     """Build a Markdown report using only text from read documents."""
+
+    def __init__(self, allowed_domains: tuple[str, ...] = ()) -> None:
+        self._allowed_domains = allowed_domains
 
     def summarize(
         self,
@@ -43,19 +47,37 @@ class ExtractiveSummarizer:
             selected = (matched or lines)[:MAX_EXTRACTS_PER_DOCUMENT]
             extracts.extend(line[:MAX_EXTRACT_LENGTH] for line in selected)
 
+        verified_web_sources = [
+            source
+            for source in web_sources or []
+            if is_allowed_domain(source.url, self._allowed_domains)
+        ]
+        for source in verified_web_sources:
+            lines = self._meaningful_lines(source.content)
+            matched = [
+                line
+                for line in lines
+                if terms and any(term in _normalize(line) for term in terms)
+            ]
+            extracts.extend(
+                line[:MAX_EXTRACT_LENGTH]
+                for line in (matched or lines)[:MAX_EXTRACTS_PER_DOCUMENT]
+            )
+
         summary_lines = (
             [f"- {extract}" for extract in extracts]
             if extracts
             else ["- 未找到相关文档。"]
         )
-        web_sources = web_sources or []
         source_lines = [
             f"[{index}] {title} — {path}"
             for index, (title, path) in enumerate(sources, start=1)
         ]
         source_lines.extend(
             f"[{index}] {source.title} — {source.url}"
-            for index, source in enumerate(web_sources, start=len(source_lines) + 1)
+            for index, source in enumerate(
+                verified_web_sources, start=len(source_lines) + 1
+            )
         )
         if not source_lines:
             source_lines = ["- 无"]

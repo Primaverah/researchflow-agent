@@ -111,6 +111,7 @@ def _run_workflow(
     max_steps: int,
     agent_mode: str = "rule",
     enable_web: bool = False,
+    allowed_domains: tuple[str, ...] = (),
 ) -> tuple[AgentState, ToolContext]:
     context = _create_context(documents_dir, output_dir)
     registry = ToolRegistry()
@@ -118,13 +119,13 @@ def _run_workflow(
         registry.register(tool)
     planner = RulePlanner()
     selector = StateSelector()
-    summarizer = ExtractiveSummarizer()
+    summarizer = ExtractiveSummarizer(allowed_domains=allowed_domains)
     if enable_web:
         provider = TavilySearchProvider.from_environment()
         for tool in create_web_tools(provider):
             registry.register(tool)
         planner = WebRulePlanner()
-        selector = WebStateSelector()
+        selector = WebStateSelector(allowed_domains=allowed_domains)
     if agent_mode == "llm":
         try:
             provider = _create_llm_provider()
@@ -281,6 +282,10 @@ def run_agent(
         bool,
         typer.Option("--enable-web", help="Enable optional Tavily web sources."),
     ] = False,
+    allowed_domain: Annotated[
+        list[str] | None,
+        typer.Option("--allowed-domain", help="Allowed web source domain."),
+    ] = None,
     verbose: Annotated[
         bool,
         typer.Option("--verbose/--no-verbose", help="Show execution details."),
@@ -300,6 +305,7 @@ def run_agent(
             max_steps,
             agent_mode,
             enable_web,
+            tuple(allowed_domain or ()),
         )
     except WebSearchConfigurationError as exc:
         _input_error(str(exc))

@@ -172,6 +172,8 @@ class DecisionTrace(DomainModel):
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     fallback: bool = False
+    fallback_reason: NonEmptyString | None = None
+    error_type: NonEmptyString | None = None
 
 
 class AgentState(DomainModel):
