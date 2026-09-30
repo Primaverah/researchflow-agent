@@ -6,6 +6,7 @@ from pathlib import Path
 from researchflow.agent import (
     AgentRunner,
     ExtractiveSummarizer,
+    GraphAgentRunner,
     RulePlanner,
     StateSelector,
 )
@@ -137,3 +138,37 @@ def test_max_steps_stops_real_workflow(tmp_path: Path) -> None:
     assert "最大步骤" in state.final_answer
     assert len(state.tool_calls) == 1
     assert not (context.output_directory / "notes").exists()
+
+
+def test_graph_workflow_writes_parseable_node_trace(tmp_path: Path) -> None:
+    context = setup_context(tmp_path)
+    (context.working_directory / "graph.md").write_text(
+        "# Graph\n\n图编排保留成功读取的证据。", encoding="utf-8"
+    )
+    registry = ToolRegistry()
+    for tool in create_offline_tools(context):
+        registry.register(tool)
+    runner = GraphAgentRunner(
+        RulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        ToolExecutor(registry, JsonlTraceRecorder()),
+    )
+
+    state = runner.run("图编排", context)
+
+    assert state.status is AgentStatus.COMPLETED
+    records = [
+        json.loads(line)
+        for line in (context.output_directory / "traces" / "agent-run.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    graph_events = [
+        record for record in records if record.get("event_type") == "graph_node"
+    ]
+    assert graph_events
+    assert graph_events[-1]["node"] == "finish"
+    assert all(event["node_status"] == "completed" for event in graph_events)
+    assert graph_events[-1]["end_reason"] == "completed"
+    assert "graph.md" in state.final_answer

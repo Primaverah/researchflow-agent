@@ -403,6 +403,16 @@ def test_max_steps_must_be_positive(cli_paths) -> None:
     assert "错误: --max-steps 必须大于或等于 1" in result.stderr
 
 
+def test_graph_orchestrator_runs_offline(cli_paths) -> None:
+    documents, output = cli_paths
+
+    result = invoke_run(documents, output, "--orchestrator", "graph")
+
+    assert result.exit_code == 0
+    assert "最终摘要" in result.stdout
+    assert any((output / "traces").glob("*.jsonl"))
+
+
 def test_invalid_max_steps_does_not_start_interactive_prompt() -> None:
     result = runner.invoke(app, ["run", "--max-steps", "0"])
 

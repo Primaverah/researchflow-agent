@@ -4,6 +4,7 @@ import logging
 import time
 from copy import deepcopy
 from datetime import UTC, datetime
+from threading import Lock
 from uuid import uuid4
 
 from researchflow.domain import (
@@ -27,6 +28,7 @@ class ToolExecutor:
     def __init__(self, registry: ToolRegistry, recorder: TraceRecorder) -> None:
         self._registry = registry
         self._recorder = recorder
+        self._record_lock = Lock()
 
     def execute(self, call: ToolCall, context: ToolContext) -> ToolResult:
         """Execute a tool call and record its result and duration."""
@@ -35,7 +37,13 @@ class ToolExecutor:
 
     def record_decision(self, decision: DecisionTrace, context: ToolContext) -> None:
         """Persist sanitized agent decision metadata with the run trace."""
-        self._recorder.record_decision(decision, context)
+        with self._record_lock:
+            self._recorder.record_decision(decision, context)
+
+    def record_graph(self, payload: dict[str, object], context: ToolContext) -> None:
+        """Persist graph node telemetry through the configured recorder."""
+        with self._record_lock:
+            self._recorder.record_graph(payload, context)
 
     def execute_with_trace(
         self, call: ToolCall, context: ToolContext
@@ -73,7 +81,8 @@ class ToolExecutor:
             started_at,
             duration_ms,
         )
-        self._recorder.record(trace, context)
+        with self._record_lock:
+            self._recorder.record(trace, context)
         return result, trace
 
     @staticmethod

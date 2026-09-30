@@ -1,0 +1,444 @@
+"""Fixed state-graph orchestration for bounded research runs.
+
+This deliberately models one research workflow rather than providing a general
+graph framework.  Nodes produce patches; the small engine owns routing and
+patch application so the nodes can later be adapted to a graph runtime.
+"""
+
+from concurrent.futures import ThreadPoolExecutor
+from enum import StrEnum
+from typing import Any, Protocol
+
+from pydantic import Field
+
+from researchflow.agent.planner import RulePlanner
+from researchflow.agent.selector import StateSelector
+from researchflow.agent.summarizer import ExtractiveSummarizer
+from researchflow.domain import (
+    AgentState,
+    AgentStatus,
+    DecisionTrace,
+    ExecutionTrace,
+    ToolCall,
+    ToolResult,
+)
+from researchflow.domain.models import DomainModel
+from researchflow.execution import ToolExecutor
+from researchflow.tools import ToolContext
+from researchflow.tools.offline import ReadDocumentOutput
+from researchflow.tools.web import WebSource
+
+
+class GraphNode(StrEnum):
+    INITIALIZE = "initialize"
+    PLAN = "plan"
+    RETRIEVE = "retrieve"
+    ASSESS_EVIDENCE = "assess_evidence"
+    REPLAN = "replan"
+    READ_SOURCES = "read_sources"
+    SYNTHESIZE = "synthesize"
+    VERIFY = "verify"
+    SAVE = "save"
+    FINISH = "finish"
+
+
+class GraphEndReason(StrEnum):
+    COMPLETED = "completed"
+    NO_RESULTS = "no_results"
+    MAX_STEPS = "max_steps"
+
+
+class GraphCandidate(DomainModel):
+    """A normalized source candidate, ordered independently of task timing."""
+
+    source_type: str
+    locator: str
+    title: str
+    summary: str = ""
+
+
+class AgentGraphState(DomainModel):
+    """Serializable state owned by the fixed graph orchestration."""
+
+    run_id: str
+    query: str
+    current_node: GraphNode = GraphNode.INITIALIZE
+    agent: AgentState | None = None
+    candidates: list[GraphCandidate] = Field(default_factory=list)
+    documents: list[ReadDocumentOutput] = Field(default_factory=list)
+    web_sources: list[WebSource] = Field(default_factory=list)
+    replans: int = 0
+    max_replans: int = 1
+    replan_reason: str | None = None
+    node_steps: int = 0
+    end_reason: GraphEndReason | None = None
+
+
+class AgentOrchestrator(Protocol):
+    """Stable boundary consumed by CLI orchestration selection."""
+
+    def run(self, query: str, context: ToolContext) -> AgentState:
+        """Run one research request."""
+        ...
+
+
+class GraphAgentRunner:
+    """Run the fixed research graph while retaining the old runner API."""
+
+    def __init__(
+        self,
+        planner: RulePlanner,
+        selector: StateSelector,
+        summarizer: ExtractiveSummarizer,
+        executor: ToolExecutor,
+        max_steps: int = 10,
+        candidate_limit: int = 10,
+        read_limit: int = 5,
+        max_concurrency: int = 3,
+        max_replans: int = 1,
+    ) -> None:
+        if min(max_steps, candidate_limit, read_limit, max_concurrency) < 1:
+            raise ValueError("graph limits must be positive")
+        if max_replans < 0:
+            raise ValueError("max_replans cannot be negative")
+        self._planner = planner
+        self._selector = selector  # Retained for the shared orchestration contract.
+        self._summarizer = summarizer
+        self._executor = executor
+        self._max_steps = max_steps
+        self._candidate_limit = candidate_limit
+        self._read_limit = read_limit
+        self._max_concurrency = max_concurrency
+        self._max_replans = max_replans
+        self._call_count = 0
+
+    def run(self, query: str, context: ToolContext) -> AgentState:
+        state = AgentGraphState(
+            run_id=context.run_id, query=query, max_replans=self._max_replans
+        )
+        while True:
+            if (
+                state.current_node is not GraphNode.FINISH
+                and state.node_steps >= self._max_steps
+            ):
+                state = state.model_copy(
+                    update={
+                        "current_node": GraphNode.FINISH,
+                        "end_reason": GraphEndReason.MAX_STEPS,
+                    }
+                )
+            node = state.current_node
+            update = self._node_update(node, state, context)
+            state = state.model_copy(
+                update={**update, "node_steps": state.node_steps + 1}
+            )
+            next_node = self.route(state)
+            self._record_graph(node, next_node, state, context)
+            if next_node is None:
+                if state.agent is None:
+                    raise RuntimeError("graph finished without agent state")
+                return state.agent
+            state = state.model_copy(update={"current_node": next_node})
+
+    @staticmethod
+    def route(state: AgentGraphState) -> GraphNode | None:
+        """Choose an edge from state only; never execute tools here."""
+        node = state.current_node
+        if node is GraphNode.INITIALIZE:
+            return GraphNode.PLAN
+        if node is GraphNode.PLAN:
+            return GraphNode.RETRIEVE
+        if node is GraphNode.RETRIEVE:
+            return GraphNode.ASSESS_EVIDENCE
+        if node is GraphNode.ASSESS_EVIDENCE:
+            if state.candidates:
+                return GraphNode.READ_SOURCES
+            if state.replans < state.max_replans and state.end_reason is None:
+                return GraphNode.REPLAN
+            return GraphNode.SYNTHESIZE
+        if node is GraphNode.REPLAN:
+            return GraphNode.RETRIEVE
+        if node is GraphNode.READ_SOURCES:
+            return GraphNode.SYNTHESIZE
+        if node is GraphNode.SYNTHESIZE:
+            return GraphNode.VERIFY
+        if node is GraphNode.VERIFY:
+            return GraphNode.SAVE
+        if node is GraphNode.SAVE:
+            return GraphNode.FINISH
+        return None
+
+    def _node_update(
+        self, node: GraphNode, state: AgentGraphState, context: ToolContext
+    ) -> dict[str, Any]:
+        return {
+            GraphNode.INITIALIZE: self._initialize,
+            GraphNode.PLAN: self._plan,
+            GraphNode.RETRIEVE: self._retrieve,
+            GraphNode.ASSESS_EVIDENCE: self._assess_evidence,
+            GraphNode.REPLAN: self._replan,
+            GraphNode.READ_SOURCES: self._read_sources,
+            GraphNode.SYNTHESIZE: self._synthesize,
+            GraphNode.VERIFY: self._verify,
+            GraphNode.SAVE: self._save,
+            GraphNode.FINISH: self._finish,
+        }[node](state, context)
+
+    def _initialize(self, state: AgentGraphState, _: ToolContext) -> dict[str, Any]:
+        return {
+            "agent": AgentState(
+                run_id=state.run_id, query=state.query, status=AgentStatus.RUNNING
+            )
+        }
+
+    def _plan(self, state: AgentGraphState, context: ToolContext) -> dict[str, Any]:
+        agent = self._agent(state)
+        agent.plan = self._planner.create_plan(state.query)
+        self._record_decision(agent, self._planner, context)
+        return {"agent": agent}
+
+    def _retrieve(self, state: AgentGraphState, context: ToolContext) -> dict[str, Any]:
+        calls = [
+            ("search_documents", {"query": state.query, "limit": self._candidate_limit})
+        ]
+        if self._has_web_plan(state):
+            calls.append(
+                ("web_search", {"query": state.query, "limit": self._candidate_limit})
+            )
+        outcomes = self._parallel_calls(state, context, calls)
+        candidates: list[GraphCandidate] = []
+        for call, result, trace in outcomes:
+            self._append_tool(self._agent(state), call, result, trace)
+            if result.success and call.tool_name == "search_documents":
+                candidates.extend(self._local_candidates(result.output))
+            if result.success and call.tool_name == "web_search":
+                candidates.extend(self._web_candidates(result.output))
+        return {
+            "agent": self._agent(state),
+            "candidates": self._deduplicate(candidates),
+        }
+
+    def _assess_evidence(
+        self, state: AgentGraphState, _: ToolContext
+    ) -> dict[str, Any]:
+        if state.candidates:
+            return {}
+        if state.replans >= state.max_replans:
+            return {
+                "replan_reason": "insufficient_evidence",
+                "end_reason": GraphEndReason.NO_RESULTS,
+            }
+        return {"replan_reason": "insufficient_evidence"}
+
+    def _replan(self, state: AgentGraphState, context: ToolContext) -> dict[str, Any]:
+        agent = self._agent(state)
+        agent.plan = self._planner.create_plan(state.query)
+        self._record_decision(agent, self._planner, context)
+        return {"agent": agent, "replans": state.replans + 1}
+
+    def _read_sources(
+        self, state: AgentGraphState, context: ToolContext
+    ) -> dict[str, Any]:
+        calls = []
+        for candidate in state.candidates[: self._read_limit]:
+            if candidate.source_type == "local":
+                calls.append(("read_document", {"path": candidate.locator}))
+            else:
+                calls.append(
+                    (
+                        "fetch_url",
+                        {
+                            "url": candidate.locator,
+                            "title": candidate.title,
+                            "summary": candidate.summary,
+                        },
+                    )
+                )
+        documents: list[ReadDocumentOutput] = []
+        web_sources: list[WebSource] = []
+        for call, result, trace in self._parallel_calls(state, context, calls):
+            self._append_tool(self._agent(state), call, result, trace)
+            if not result.success:
+                continue
+            if call.tool_name == "read_document":
+                documents.append(ReadDocumentOutput.model_validate(result.output))
+            else:
+                web_sources.append(WebSource.model_validate(result.output))
+        return {
+            "agent": self._agent(state),
+            "documents": documents,
+            "web_sources": web_sources,
+        }
+
+    def _synthesize(
+        self, state: AgentGraphState, context: ToolContext
+    ) -> dict[str, Any]:
+        agent = self._agent(state)
+        agent.final_answer = self._summarizer.summarize(
+            state.query, state.documents, state.web_sources
+        )
+        self._record_decision(agent, self._summarizer, context)
+        return {"agent": agent}
+
+    def _verify(self, state: AgentGraphState, _: ToolContext) -> dict[str, Any]:
+        # Inputs are constructed only from successful result validation above.
+        return {}
+
+    def _save(self, state: AgentGraphState, context: ToolContext) -> dict[str, Any]:
+        agent = self._agent(state)
+        call, result, trace = self._one_call(
+            state,
+            context,
+            "save_note",
+            {
+                "path": f"notes/{state.run_id}.md",
+                "content": agent.final_answer or "# 研究报告",
+                "overwrite": False,
+            },
+        )
+        self._append_tool(agent, call, result, trace)
+        return {"agent": agent}
+
+    def _finish(self, state: AgentGraphState, _: ToolContext) -> dict[str, Any]:
+        agent = self._agent(state)
+        if state.end_reason is GraphEndReason.MAX_STEPS:
+            agent.final_answer = "Agent 已达到最大步骤限制，研究流程已停止。"
+        elif agent.final_answer is None:
+            agent.final_answer = self._summarizer.summarize(state.query, [], [])
+        agent.status = AgentStatus.COMPLETED
+        return {
+            "agent": agent,
+            "end_reason": state.end_reason or GraphEndReason.COMPLETED,
+        }
+
+    def _parallel_calls(
+        self,
+        state: AgentGraphState,
+        context: ToolContext,
+        specs: list[tuple[str, dict[str, Any]]],
+    ) -> list[tuple[ToolCall, ToolResult, ExecutionTrace]]:
+        calls = [self._new_call(state, name, args) for name, args in specs]
+        if len(calls) <= 1:
+            return [self._execute(call, context) for call in calls]
+        with ThreadPoolExecutor(
+            max_workers=min(self._max_concurrency, len(calls))
+        ) as pool:
+            futures = [pool.submit(self._execute, call, context) for call in calls]
+            return [future.result() for future in futures]
+
+    def _one_call(
+        self,
+        state: AgentGraphState,
+        context: ToolContext,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> tuple[ToolCall, ToolResult, ExecutionTrace]:
+        return self._execute(self._new_call(state, name, arguments), context)
+
+    def _execute(
+        self, call: ToolCall, context: ToolContext
+    ) -> tuple[ToolCall, ToolResult, ExecutionTrace]:
+        result, trace = self._executor.execute_with_trace(call, context)
+        return call, result, trace
+
+    def _new_call(
+        self, state: AgentGraphState, name: str, arguments: dict[str, Any]
+    ) -> ToolCall:
+        self._call_count += 1
+        return ToolCall(
+            call_id=f"{state.run_id}-{self._call_count}",
+            tool_name=name,
+            arguments=arguments,
+        )
+
+    @staticmethod
+    def _local_candidates(output: Any) -> list[GraphCandidate]:
+        return [
+            GraphCandidate(
+                source_type="local",
+                locator=item["path"],
+                title=item.get("title", item["path"]),
+            )
+            for item in (output or {}).get("hits", [])
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        ]
+
+    @staticmethod
+    def _web_candidates(output: Any) -> list[GraphCandidate]:
+        return [
+            GraphCandidate(
+                source_type="web",
+                locator=item["url"],
+                title=item.get("title", item["url"]),
+                summary=item.get("summary", ""),
+            )
+            for item in (output or {}).get("results", [])
+            if isinstance(item, dict) and isinstance(item.get("url"), str)
+        ]
+
+    def _deduplicate(self, candidates: list[GraphCandidate]) -> list[GraphCandidate]:
+        unique: dict[tuple[str, str], GraphCandidate] = {}
+        for candidate in candidates:
+            unique.setdefault((candidate.source_type, candidate.locator), candidate)
+        return sorted(
+            unique.values(),
+            key=lambda item: (item.source_type, item.locator, item.title),
+        )[: self._candidate_limit]
+
+    @staticmethod
+    def _has_web_plan(state: AgentGraphState) -> bool:
+        return bool(
+            state.agent
+            and state.agent.plan
+            and any(step.tool_name == "web_search" for step in state.agent.plan.steps)
+        )
+
+    @staticmethod
+    def _agent(state: AgentGraphState) -> AgentState:
+        if state.agent is None:
+            raise RuntimeError("graph node requires initialized agent state")
+        return state.agent
+
+    @staticmethod
+    def _append_tool(
+        agent: AgentState, call: ToolCall, result: ToolResult, trace: ExecutionTrace
+    ) -> None:
+        agent.tool_calls.append(call)
+        agent.tool_results.append(result)
+        agent.traces.append(trace)
+
+    def _record_decision(
+        self, agent: AgentState, component: object, context: ToolContext
+    ) -> None:
+        decision = getattr(component, "last_decision", None)
+        if decision is None:
+            return
+        trace = DecisionTrace.model_validate(decision.model_dump())
+        agent.decision_traces.append(trace)
+        record = getattr(self._executor, "record_decision", None)
+        if callable(record):
+            record(trace, context)
+
+    def _record_graph(
+        self,
+        node: GraphNode,
+        next_node: GraphNode | None,
+        state: AgentGraphState,
+        context: ToolContext,
+    ) -> None:
+        record = getattr(self._executor, "record_graph", None)
+        if callable(record):
+            record(
+                {
+                    "node": node.value,
+                    "node_status": "completed",
+                    "edge": None if next_node is None else next_node.value,
+                    "replan_reason": state.replan_reason,
+                    "step_count": state.node_steps,
+                    "source_count": len(state.documents) + len(state.web_sources),
+                    "end_reason": None
+                    if state.end_reason is None
+                    else state.end_reason.value,
+                },
+                context,
+            )
