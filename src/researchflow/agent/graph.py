@@ -6,6 +6,7 @@ patch application so the nodes can later be adapted to a graph runtime.
 """
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -413,7 +414,7 @@ class GraphAgentRunner:
         decision = getattr(component, "last_decision", None)
         if decision is None:
             return
-        trace = DecisionTrace.model_validate(decision.model_dump())
+        trace = DecisionTrace.model_validate(asdict(decision))
         agent.decision_traces.append(trace)
         record = getattr(self._executor, "record_decision", None)
         if callable(record):
