@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import Callable
 from typing import Protocol
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from researchflow.config import load_local_secrets, load_project_config, value
@@ -98,5 +99,9 @@ class TavilySearchProvider:
                 and isinstance(item.get("title"), str)
                 and isinstance(item.get("url"), str)
             ]
+        except HTTPError as exc:
+            raise WebSearchError(f"web search HTTP {exc.code}") from exc
+        except URLError as exc:
+            raise WebSearchError("web search network error") from exc
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
             raise WebSearchError("web search request failed") from exc

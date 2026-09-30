@@ -58,7 +58,7 @@ class WebSearchTool(BaseTool):
             )
         except WebSearchError as exc:
             raise ToolFailure(
-                "web search failed", error_type="web_search_failed"
+                str(exc), error_type="web_search_failed"
             ) from exc
         results = [
             item
@@ -74,7 +74,7 @@ class WebSearchTool(BaseTool):
                 )
             except WebSearchError as exc:
                 raise ToolFailure(
-                    "web search failed", error_type="web_search_failed"
+                    str(exc), error_type="web_search_failed"
                 ) from exc
             results = [
                 item
