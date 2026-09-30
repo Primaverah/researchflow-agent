@@ -10,8 +10,10 @@ from pydantic import BaseModel
 
 from researchflow import __version__
 from researchflow.agent import (
+    AgentOrchestrator,
     AgentRunner,
     ExtractiveSummarizer,
+    GraphAgentRunner,
     LLMPlanner,
     LLMSelector,
     LLMSummarizer,
@@ -167,6 +169,17 @@ def _allow_llm_fallback() -> bool:
     )
 
 
+def _graph_options() -> dict[str, int]:
+    """Load bounded graph settings, leaving validation to the runner."""
+    graph = load_project_config().get("graph", {})
+    if not isinstance(graph, dict):
+        return {}
+    names = ("candidate_limit", "read_limit", "max_concurrency", "max_replans")
+    return {
+        name: value for name in names if isinstance((value := graph.get(name)), int)
+    }
+
+
 def _run_workflow(
     query: str,
     documents_dir: Path,
@@ -176,6 +189,7 @@ def _run_workflow(
     enable_web: bool = False,
     allowed_domains: tuple[str, ...] = (),
     llm_overrides: dict[str, object] | None = None,
+    orchestrator: str = "loop",
 ) -> tuple[AgentState, ToolContext]:
     context = _create_context(documents_dir, output_dir)
     registry = ToolRegistry()
@@ -225,13 +239,21 @@ def _run_workflow(
                 thinking=llm_config.thinking,
                 allowed_domains=allowed_domains,
             )
-    runner = AgentRunner(
-        planner,
-        selector,
-        summarizer,
-        ToolExecutor(registry, JsonlTraceRecorder()),
-        max_steps=max_steps,
-    )
+    executor = ToolExecutor(registry, JsonlTraceRecorder())
+    runner: AgentOrchestrator
+    if orchestrator == "graph":
+        runner = GraphAgentRunner(
+            planner,
+            selector,
+            summarizer,
+            executor,
+            max_steps=max_steps,
+            **_graph_options(),
+        )
+    else:
+        runner = AgentRunner(
+            planner, selector, summarizer, executor, max_steps=max_steps
+        )
     return runner.run(query, context), context
 
 
@@ -430,6 +452,10 @@ def run_agent(
         str,
         typer.Option("--agent-mode", help="Agent mode: rule (default) or llm."),
     ] = "rule",
+    orchestrator: Annotated[
+        str,
+        typer.Option("--orchestrator", help="Orchestrator: loop (default) or graph."),
+    ] = "loop",
     enable_web: Annotated[
         bool,
         typer.Option("--enable-web", help="Enable optional Tavily web sources."),
@@ -451,6 +477,8 @@ def run_agent(
         _input_error("--max-steps 必须大于或等于 1")
     if agent_mode not in {"rule", "llm"}:
         _input_error("--agent-mode 必须为 rule 或 llm")
+    if orchestrator not in {"loop", "graph"}:
+        _input_error("--orchestrator 必须为 loop 或 graph")
     resolved_query = _resolve_query(query)
     try:
         state, context = _run_workflow(
@@ -462,6 +490,7 @@ def run_agent(
             enable_web,
             tuple(allowed_domain or ()),
             ctx.obj["llm_overrides"],
+            orchestrator,
         )
     except WebSearchConfigurationError as exc:
         _input_error(str(exc))

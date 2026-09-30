@@ -17,3 +17,9 @@ allowed_domains = []
 mode = "llm"
 max_steps = 10
 allow_fallback = true
+
+[graph]
+candidate_limit = 10
+read_limit = 5
+max_concurrency = 3
+max_replans = 1

@@ -21,6 +21,10 @@ class TraceRecorder(Protocol):
         """Persist sanitized LLM decision metadata."""
         ...
 
+    def record_graph(self, payload: dict[str, object], context: ToolContext) -> None:
+        """Persist one safe graph node event."""
+        ...
+
 
 class JsonlTraceRecorder:
     """Append one JSON object per line to a run-specific trace file."""
@@ -53,6 +57,11 @@ class JsonlTraceRecorder:
             },
             context,
         )
+
+    def record_graph(self, payload: dict[str, object], context: ToolContext) -> None:
+        """Append graph routing telemetry without prompts or source content."""
+        self._validate_run_id(context.run_id)
+        self._append_payload({"event_type": "graph_node", **payload}, context)
 
     def _append_payload(self, payload_data: object, context: ToolContext) -> None:
         try:
