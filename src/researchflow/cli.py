@@ -188,17 +188,25 @@ def _session_database(output_dir: Path) -> Path:
     return output_dir / "sessions" / "checkpoints.sqlite3"
 
 
-def _session_runner(documents_dir: Path, output_dir: Path) -> LangGraphSessionRunner:
+def _session_runner(
+    documents_dir: Path,
+    output_dir: Path,
+    *,
+    agent_mode: str,
+    enable_web: bool,
+    allowed_domains: tuple[str, ...],
+    llm_overrides: dict[str, object] | None,
+) -> LangGraphSessionRunner:
     def research(query: str) -> str:
         state, _ = _run_workflow(
             query,
             documents_dir,
             output_dir,
             10,
-            "rule",
-            False,
-            (),
-            None,
+            agent_mode,
+            enable_web,
+            allowed_domains,
+            llm_overrides,
             "graph",
         )
         return state.final_answer or "未找到相关文档。"
@@ -540,15 +548,35 @@ def run_agent(
 
 @app.command("chat")
 def chat(
+    ctx: typer.Context,
     message: Annotated[str | None, typer.Argument(help="Message to research.")] = None,
     session_id: Annotated[str | None, typer.Option("--session-id")] = None,
     documents_dir: Annotated[Path, typer.Option("--documents-dir")] = Path(
         "examples/documents"
     ),
     output_dir: Annotated[Path, typer.Option("--output-dir")] = Path("output"),
+    agent_mode: Annotated[
+        str, typer.Option("--agent-mode", help="Agent mode: rule or llm.")
+    ] = "rule",
+    enable_web: Annotated[
+        bool, typer.Option("--enable-web", help="Enable Tavily web search.")
+    ] = False,
+    allowed_domain: Annotated[
+        list[str] | None,
+        typer.Option("--allowed-domain", help="Allowed web domain; repeatable."),
+    ] = None,
 ) -> None:
-    """Run one persisted offline research chat turn."""
-    session_runner = _session_runner(documents_dir, output_dir)
+    """Run one persisted research chat turn."""
+    if agent_mode not in {"rule", "llm"}:
+        _input_error("--agent-mode 必须为 rule 或 llm")
+    session_runner = _session_runner(
+        documents_dir,
+        output_dir,
+        agent_mode=agent_mode,
+        enable_web=enable_web,
+        allowed_domains=tuple(allowed_domain or ()),
+        llm_overrides=ctx.obj["llm_overrides"],
+    )
     resolved_session = session_id or uuid4().hex
     try:
         content = message if message is not None else typer.prompt("消息")
@@ -559,6 +587,8 @@ def chat(
             )
         typer.echo(f"session_id: {resolved_session}")
         typer.echo(result.response)
+    except WebSearchConfigurationError as exc:
+        _input_error(str(exc))
     finally:
         session_runner.close()
 
