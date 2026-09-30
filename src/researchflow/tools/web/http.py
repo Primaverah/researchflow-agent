@@ -38,7 +38,17 @@ class _TextExtractor(HTMLParser):
     _IGNORED_TAGS = {"script", "style", "noscript", "template", "svg"}
     _CHROME_TAGS = {"nav", "aside", "header", "footer", "form"}
     _PRIMARY_TAGS = {"main", "article"}
-    _CHROME_TOKENS = {"ad", "ads", "advert", "advertisement", "banner", "cookie"}
+    _CHROME_TOKENS = {
+        "ad",
+        "ads",
+        "advert",
+        "advertisement",
+        "banner",
+        "cookie",
+        "theme",
+        "switcher",
+        "version",
+    }
 
     def __init__(self) -> None:
         super().__init__()

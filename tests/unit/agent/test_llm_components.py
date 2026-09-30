@@ -23,11 +23,14 @@ from researchflow.tools.web import WebSource
 class FakeProvider(BaseLLMProvider):
     def __init__(self, responses: list[dict[str, object]]) -> None:
         self._responses = iter(responses)
+        self.requests: list[LLMRequest] = []
 
     def complete(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
         return LLMResponse(
             content=json.dumps(next(self._responses)),
             usage=TokenUsage(input_tokens=3, output_tokens=2),
+            finish_reason="stop",
         )
 
 
@@ -73,6 +76,134 @@ def test_llm_planner_returns_validated_local_plan() -> None:
     assert planner.last_decision.component == "planner"
     assert planner.last_decision.model == "fake-model"
     assert planner.last_decision.input_tokens == 3
+
+
+def test_llm_components_use_their_configured_token_budgets() -> None:
+    provider = FakeProvider(
+        [
+            {
+                "steps": [
+                    {
+                        "step_id": "search",
+                        "description": "Search",
+                        "tool_name": "search_documents",
+                    },
+                    {
+                        "step_id": "read",
+                        "description": "Read",
+                        "tool_name": "read_document",
+                    },
+                    {"step_id": "summarize", "description": "Summarize"},
+                    {
+                        "step_id": "save",
+                        "description": "Save",
+                        "tool_name": "save_note",
+                    },
+                ]
+            },
+            {
+                "action_type": "search",
+                "tool_name": "search_documents",
+                "arguments": {"query": "tool calling", "limit": 5},
+            },
+            {"summary": "No sources.", "source_paths": []},
+        ]
+    )
+    planner = LLMPlanner(
+        provider, RulePlanner(), model_name="fake-model", max_output_tokens=1024
+    )
+    plan = planner.create_plan("tool calling")
+    selector = LLMSelector(
+        provider, StateSelector(), model_name="fake-model", max_output_tokens=1024
+    )
+    selector.select(
+        AgentState(
+            run_id="run-1",
+            query="tool calling",
+            status=AgentStatus.RUNNING,
+            plan=plan,
+        )
+    )
+    summarizer = LLMSummarizer(
+        provider,
+        ExtractiveSummarizer(),
+        model_name="fake-model",
+        max_output_tokens=2048,
+    )
+    summarizer.summarize("tool calling", [])
+
+    assert [request.max_output_tokens for request in provider.requests] == [
+        1024,
+        1024,
+        2048,
+    ]
+
+
+def test_planner_retries_field_mismatch_with_its_schema_and_keeps_usage() -> None:
+    provider = FakeProvider([{"action": "plan"}, {"action": "plan"}])
+    planner = LLMPlanner(provider, RulePlanner(), model_name="fake-model")
+
+    planner.create_plan("tool calling")
+
+    assert planner.last_decision is not None
+    assert planner.last_decision.fallback is True
+    assert planner.last_decision.input_tokens == 3
+    assert planner.last_decision.output_tokens == 2
+    assert planner.last_decision.finish_reason == "stop"
+    assert len(provider.requests) == 2
+    assert '"steps"' in provider.requests[0].user_prompt
+    assert '"step_id"' in provider.requests[0].user_prompt
+    assert "Validation errors" in provider.requests[1].user_prompt
+
+
+def test_selector_retries_field_mismatch_with_its_schema_and_keeps_usage() -> None:
+    provider = FakeProvider([{"result": "search"}, {"result": "search"}])
+    selector = LLMSelector(provider, StateSelector(), model_name="fake-model")
+    state = AgentState(
+        run_id="run-1",
+        query="tool calling",
+        status=AgentStatus.RUNNING,
+        plan=RulePlanner().create_plan("tool calling"),
+    )
+
+    selector.select(state)
+
+    assert selector.last_decision is not None
+    assert selector.last_decision.fallback is True
+    assert selector.last_decision.input_tokens == 3
+    assert selector.last_decision.output_tokens == 2
+    assert selector.last_decision.finish_reason == "stop"
+    assert len(provider.requests) == 2
+    assert '"action_type"' in provider.requests[0].user_prompt
+    assert '"arguments"' in provider.requests[0].user_prompt
+    assert "Validation errors" in provider.requests[1].user_prompt
+
+
+def test_summarizer_retries_field_mismatch_with_its_schema_and_keeps_usage() -> None:
+    provider = FakeProvider([{"result": "summary"}, {"result": "summary"}])
+    summarizer = LLMSummarizer(
+        provider, ExtractiveSummarizer(), model_name="fake-model"
+    )
+    documents = [
+        ReadDocumentOutput(
+            path="read.md",
+            title="Read source",
+            content="Verified content.",
+            char_count=17,
+        )
+    ]
+
+    summarizer.summarize("tool calling", documents)
+
+    assert summarizer.last_decision is not None
+    assert summarizer.last_decision.fallback is True
+    assert summarizer.last_decision.input_tokens == 3
+    assert summarizer.last_decision.output_tokens == 2
+    assert summarizer.last_decision.finish_reason == "stop"
+    assert len(provider.requests) == 2
+    assert '"summary"' in provider.requests[0].user_prompt
+    assert '"source_paths"' in provider.requests[0].user_prompt
+    assert "Validation errors" in provider.requests[1].user_prompt
 
 
 def test_llm_planner_preserves_the_safe_web_workflow() -> None:

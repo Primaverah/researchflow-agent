@@ -250,3 +250,26 @@ def test_web_workflow_converges_all_plan_steps_before_finishing(tmp_path: Path) 
     assert state.status is AgentStatus.COMPLETED
     assert all(step.status is not PlanStepStatus.RUNNING for step in state.plan.steps)
     assert "https://docs.python.org/3/" in state.final_answer
+
+
+def test_web_workflow_ends_without_sources_when_no_allowed_result_exists(
+    tmp_path: Path,
+) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return result(call, output={"results": []})
+        return result(call, output={"path": "notes/run-1.md", "char_count": 1})
+
+    state = AgentRunner(
+        WebRulePlanner(),
+        WebStateSelector(allowed_domains=("docs.python.org",)),
+        ExtractiveSummarizer(allowed_domains=("docs.python.org",)),
+        FakeExecutor(handler),  # type: ignore[arg-type]
+    ).run("Python", context(tmp_path))
+
+    assert state.status is AgentStatus.COMPLETED
+    assert "未找到相关文档" in state.final_answer
+    assert "https://" not in state.final_answer
+    assert "## 来源\n\n- 无" in state.final_answer

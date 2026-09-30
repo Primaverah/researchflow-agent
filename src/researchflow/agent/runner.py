@@ -272,9 +272,12 @@ class AgentRunner:
             model=decision.model,
             input_tokens=decision.input_tokens,
             output_tokens=decision.output_tokens,
+            success=decision.success,
             fallback=decision.fallback,
             fallback_reason=decision.fallback_reason,
             error_type=decision.error_type,
+            finish_reason=decision.finish_reason,
+            diagnostic=decision.diagnostic,
         )
         state.decision_traces.append(trace)
         record_decision = getattr(self._executor, "record_decision", None)

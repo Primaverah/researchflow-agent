@@ -40,9 +40,12 @@ class LLMDecision:
     model: str
     input_tokens: int
     output_tokens: int
+    success: bool = True
     fallback: bool = False
     fallback_reason: str | None = None
     error_type: str | None = None
+    finish_reason: str = "completed"
+    diagnostic: dict[str, object] | None = None
 
 
 class LLMPlanStep(BaseModel):
@@ -87,20 +90,49 @@ class LLMSummaryOutput(BaseModel):
 
 
 class _LLMComponent:
-    def __init__(self, provider: BaseLLMProvider, model_name: str) -> None:
+    def __init__(
+        self,
+        provider: BaseLLMProvider,
+        model_name: str,
+        max_output_tokens: int,
+        response_format: str = "json_object",
+        thinking: bool = False,
+    ) -> None:
         self._provider = provider
         self._model_name = model_name
+        self._max_output_tokens = max_output_tokens
+        self._response_format = response_format
+        self._thinking = thinking
         self.last_decision: LLMDecision | None = None
 
-    def _complete(self, prompt: str, schema: type[BaseModel]) -> BaseModel:
+    def _complete(
+        self,
+        instruction: str,
+        schema: type[BaseModel],
+        example: dict[str, object],
+    ) -> BaseModel:
+        prompt = (
+            f"{instruction}\n\nJSON Schema: "
+            + json.dumps(schema.model_json_schema(), ensure_ascii=False)
+            + "\n\nMinimum valid JSON example: "
+            + json.dumps(example, ensure_ascii=False)
+        )
         result, usage = self._provider.complete_structured(
-            LLMRequest(user_prompt=prompt), schema
+            LLMRequest(
+                user_prompt=prompt + " Return only JSON, without Markdown code fences.",
+                system_prompt='Return only valid JSON. Example: {"result": "value"}.',
+                max_output_tokens=self._max_output_tokens,
+                response_format=self._response_format,
+                thinking=self._thinking,
+            ),
+            schema,
         )
         self.last_decision = LLMDecision(
             component="",
             model=self._model_name,
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
+            finish_reason=getattr(self._provider, "_last_finish_reason", "completed"),
         )
         return result
 
@@ -115,11 +147,14 @@ class _LLMComponent:
         self.last_decision = LLMDecision(
             component=component,
             model=self._model_name,
-            input_tokens=0,
-            output_tokens=0,
+            input_tokens=getattr(error, "input_tokens", 0),
+            output_tokens=getattr(error, "output_tokens", 0),
+            success=False,
             fallback=True,
             fallback_reason=reason,
             error_type=type(error).__name__,
+            finish_reason=getattr(error, "finish_reason", "fallback"),
+            diagnostic=getattr(error, "diagnostic", None),
         )
 
 
@@ -132,8 +167,13 @@ class LLMPlanner(_LLMComponent):
         fallback: RulePlanner,
         *,
         model_name: str,
+        max_output_tokens: int = 1024,
+        response_format: str = "json_object",
+        thinking: bool = False,
     ) -> None:
-        super().__init__(provider, model_name)
+        super().__init__(
+            provider, model_name, max_output_tokens, response_format, thinking
+        )
         self._fallback_planner = fallback
 
     def create_plan(self, query: str) -> ResearchPlan:
@@ -147,6 +187,30 @@ class LLMPlanner(_LLMComponent):
                 + json.dumps(expected_steps)
                 + f". Query: {query}",
                 LLMPlanOutput,
+                {
+                    "steps": [
+                        {
+                            "step_id": "search",
+                            "description": "Search relevant local documents.",
+                            "tool_name": "search_documents",
+                        },
+                        {
+                            "step_id": "read",
+                            "description": "Read selected documents.",
+                            "tool_name": "read_document",
+                        },
+                        {
+                            "step_id": "summarize",
+                            "description": "Summarize verified evidence.",
+                            "tool_name": None,
+                        },
+                        {
+                            "step_id": "save",
+                            "description": "Save the research report.",
+                            "tool_name": "save_note",
+                        },
+                    ]
+                },
             )
             assert isinstance(output, LLMPlanOutput)
             self._validate_plan(output, expected_steps)
@@ -159,6 +223,7 @@ class LLMPlanner(_LLMComponent):
             model=self.last_decision.model,
             input_tokens=self.last_decision.input_tokens,
             output_tokens=self.last_decision.output_tokens,
+            finish_reason=self.last_decision.finish_reason,
         )
         return ResearchPlan(
             plan_id=str(uuid4()),
@@ -191,8 +256,13 @@ class LLMSelector(_LLMComponent):
         fallback: StateSelector,
         *,
         model_name: str,
+        max_output_tokens: int = 1024,
+        response_format: str = "json_object",
+        thinking: bool = False,
     ) -> None:
-        super().__init__(provider, model_name)
+        super().__init__(
+            provider, model_name, max_output_tokens, response_format, thinking
+        )
         self._fallback_selector = fallback
 
     def select(self, state: AgentState) -> AgentAction:
@@ -203,6 +273,11 @@ class LLMSelector(_LLMComponent):
                 "match the permitted fallback action. State: "
                 + json.dumps(self._state_prompt(state), ensure_ascii=False),
                 LLMActionOutput,
+                {
+                    "action_type": fallback_action.action_type.value,
+                    "tool_name": fallback_action.tool_name,
+                    "arguments": fallback_action.arguments,
+                },
             )
             assert isinstance(output, LLMActionOutput)
             action = AgentAction(
@@ -220,6 +295,7 @@ class LLMSelector(_LLMComponent):
             model=self.last_decision.model,
             input_tokens=self.last_decision.input_tokens,
             output_tokens=self.last_decision.output_tokens,
+            finish_reason=self.last_decision.finish_reason,
         )
         return action
 
@@ -280,9 +356,14 @@ class LLMSummarizer(_LLMComponent):
         fallback: ExtractiveSummarizer,
         *,
         model_name: str,
+        max_output_tokens: int = 2048,
+        response_format: str = "json_object",
+        thinking: bool = False,
         allowed_domains: tuple[str, ...] = (),
     ) -> None:
-        super().__init__(provider, model_name)
+        super().__init__(
+            provider, model_name, max_output_tokens, response_format, thinking
+        )
         self._fallback_summarizer = fallback
         self._allowed_domains = allowed_domains
 
@@ -319,6 +400,10 @@ class LLMSummarizer(_LLMComponent):
                 "their source values in source_paths: "
                 + json.dumps(evidence, ensure_ascii=False),
                 LLMSummaryOutput,
+                {
+                    "summary": "A concise summary supported by the supplied source.",
+                    "source_paths": [item["source"] for item in evidence[:1]],
+                },
             )
             assert isinstance(output, LLMSummaryOutput)
             allowed_paths = {item["source"] for item in evidence}
@@ -333,6 +418,7 @@ class LLMSummarizer(_LLMComponent):
             model=self.last_decision.model,
             input_tokens=self.last_decision.input_tokens,
             output_tokens=self.last_decision.output_tokens,
+            finish_reason=self.last_decision.finish_reason,
         )
         citations = set(output.source_paths)
         source_lines = [

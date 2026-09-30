@@ -1,6 +1,7 @@
 """Synchronous execution trace recorders."""
 
 import json
+import re
 from pathlib import Path, PureWindowsPath
 from typing import Protocol
 
@@ -43,9 +44,12 @@ class JsonlTraceRecorder:
                     "input_tokens": decision.input_tokens,
                     "output_tokens": decision.output_tokens,
                 },
+                "success": decision.success,
                 "fallback": decision.fallback,
                 "fallback_reason": decision.fallback_reason,
                 "error_type": decision.error_type,
+                "finish_reason": decision.finish_reason,
+                "diagnostic": self._redact(decision.diagnostic),
             },
             context,
         )
@@ -89,3 +93,17 @@ class JsonlTraceRecorder:
             or "\\" in run_id
         ):
             raise TraceRecordingError("run_id must be a single safe path component")
+
+    @staticmethod
+    def _redact(value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                key: JsonlTraceRecorder._redact(item) for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [JsonlTraceRecorder._redact(item) for item in value]
+        if isinstance(value, str):
+            return re.sub(
+                r"(?i)(bearer\\s+|sk-)[A-Za-z0-9_-]+", r"\\1[REDACTED]", value
+            )
+        return value

@@ -1,0 +1,19 @@
+[llm]
+model = "deepseek-flash"
+response_format = "json_object"
+timeout = 60
+planner_max_tokens = 1024
+selector_max_tokens = 1024
+summarizer_max_tokens = 2048
+thinking = false
+retries = 1
+
+[web]
+timeout = 20
+retries = 1
+allowed_domains = []
+
+[agent]
+mode = "llm"
+max_steps = 10
+allow_fallback = true

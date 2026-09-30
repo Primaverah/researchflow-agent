@@ -122,9 +122,12 @@ def test_llm_workflow_records_sanitized_decisions_and_saves_only_read_source(
             "component",
             "model",
             "usage",
+            "success",
             "fallback",
             "fallback_reason",
             "error_type",
+            "finish_reason",
+            "diagnostic",
         }
         for record in decisions
     )

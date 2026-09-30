@@ -98,3 +98,31 @@ def test_summarizer_cites_only_sources_with_selected_evidence() -> None:
     assert "Official docs" in report
     assert "Empty source" not in report
     assert "Blocked source" not in report
+
+
+def test_summarizer_merges_one_topic_and_cites_only_supporting_sources() -> None:
+    report = ExtractiveSummarizer().summarize(
+        "Python 3.13",
+        [],
+        [
+            WebSource(
+                title="Free-threaded mode",
+                url="https://docs.python.org/3.13/whatsnew/3.13.html",
+                summary="",
+                accessed_at=datetime.now(UTC),
+                content="Python 3.13 adds a free-threaded build.",
+            ),
+            WebSource(
+                title="Typing changes",
+                url="https://docs.python.org/3.13/library/typing.html",
+                summary="",
+                accessed_at=datetime.now(UTC),
+                content="Python 3.13 improves typing support.",
+            ),
+        ],
+    )
+
+    assert report.count("- Python 3.13：") == 1
+    assert "[1, 2]" in report
+    assert "[1] Free-threaded mode" in report
+    assert "[2] Typing changes" in report

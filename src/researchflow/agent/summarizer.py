@@ -27,8 +27,8 @@ class ExtractiveSummarizer:
         documents: list[ReadDocumentOutput],
         web_sources: list[WebSource] | None = None,
     ) -> str:
-        """Return a stable report with extracts and verified local sources."""
-        extracts: list[str] = []
+        """Return a stable report with source-supported thematic conclusions."""
+        evidence: list[tuple[str, int]] = []
         sources: list[tuple[str, str]] = []
         seen_sources: set[str] = set()
         terms = tuple(dict.fromkeys(_normalize(query).split()))
@@ -44,9 +44,12 @@ class ExtractiveSummarizer:
                 if terms and any(term in _normalize(line) for term in terms)
             ]
             selected = (matched or lines)[:MAX_EXTRACTS_PER_DOCUMENT]
-            extracts.extend(line[:MAX_EXTRACT_LENGTH] for line in selected)
             if selected:
                 sources.append((document.title, document.path))
+                source_index = len(sources)
+                evidence.extend(
+                    (line[:MAX_EXTRACT_LENGTH], source_index) for line in selected
+                )
 
         for source in web_sources or []:
             if not is_allowed_domain(source.url, self._allowed_domains):
@@ -58,15 +61,14 @@ class ExtractiveSummarizer:
                 if terms and any(term in _normalize(line) for term in terms)
             ]
             selected = (matched or lines)[:MAX_EXTRACTS_PER_DOCUMENT]
-            extracts.extend(line[:MAX_EXTRACT_LENGTH] for line in selected)
             if selected:
                 sources.append((source.title, source.url))
+                source_index = len(sources)
+                evidence.extend(
+                    (line[:MAX_EXTRACT_LENGTH], source_index) for line in selected
+                )
 
-        summary_lines = (
-            [f"- {extract}" for extract in extracts]
-            if extracts
-            else ["- 未找到相关文档。"]
-        )
+        summary_lines = self._thematic_summary(query, evidence)
         source_lines = [
             f"[{index}] {title} — {path}"
             for index, (title, path) in enumerate(sources, start=1)
@@ -98,6 +100,26 @@ class ExtractiveSummarizer:
             line = raw_line.strip()
             if not line or line.startswith("#"):
                 continue
-            parts = re.split(r"(?<=[。！？.!?])\s*", line)
+            parts = re.split(r"(?<=[。！？!?])\s*|(?<!\d)\.(?:\s+|$)", line)
             lines.extend(part.strip() for part in parts if part.strip())
         return lines
+
+    @staticmethod
+    def _thematic_summary(query: str, evidence: list[tuple[str, int]]) -> list[str]:
+        if not evidence:
+            return ["- 未找到相关文档。"]
+
+        facts: list[str] = []
+        source_indexes: list[int] = []
+        seen_facts: set[str] = set()
+        for text, source_index in evidence:
+            fact = text.strip()
+            if not fact or _normalize(fact) in seen_facts:
+                continue
+            seen_facts.add(_normalize(fact))
+            facts.append(fact)
+            if source_index not in source_indexes:
+                source_indexes.append(source_index)
+
+        citations = ", ".join(str(index) for index in source_indexes)
+        return [f"- {query}：{'；'.join(facts)} [{citations}]"]

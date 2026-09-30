@@ -20,12 +20,18 @@ from researchflow.agent import (
     WebRulePlanner,
     WebStateSelector,
 )
+from researchflow.config import load_project_config
 from researchflow.domain import AgentState, AgentStatus, ToolResult
 from researchflow.evaluation import evaluate_retriever
 from researchflow.execution import JsonlTraceRecorder, ToolExecutor
-from researchflow.llm import LLMConfig, LLMError, LLMRequest, OpenAICompatibleProvider
+from researchflow.llm import (
+    LLMConfig,
+    LLMConfigurationError,
+    LLMError,
+    OpenAICompatibleProvider,
+)
 from researchflow.tools import ToolContext, ToolRegistry
-from researchflow.tools.offline import create_offline_tools
+from researchflow.tools.offline import ReadDocumentOutput, create_offline_tools
 from researchflow.tools.web import (
     TavilySearchProvider,
     WebSearchConfigurationError,
@@ -43,8 +49,10 @@ class LLMCheckOutput(BaseModel):
     status: str
 
 
-def _create_llm_provider() -> OpenAICompatibleProvider:
-    return OpenAICompatibleProvider(LLMConfig.from_environment())
+def _create_llm_provider(
+    config: LLMConfig | None = None,
+) -> OpenAICompatibleProvider:
+    return OpenAICompatibleProvider(config or LLMConfig.resolve())
 
 
 def version_callback(value: bool) -> None:
@@ -56,6 +64,7 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: Annotated[
         bool | None,
         typer.Option(
@@ -65,8 +74,54 @@ def main(
             help="Show the version and exit.",
         ),
     ] = None,
+    llm_base_url: Annotated[
+        str | None, typer.Option("--llm-base-url", help="LLM API base URL.")
+    ] = None,
+    llm_model: Annotated[
+        str | None, typer.Option("--llm-model", help="LLM model name.")
+    ] = None,
+    llm_response_format: Annotated[
+        str | None,
+        typer.Option("--llm-response-format", help="LLM response format."),
+    ] = None,
+    llm_thinking: Annotated[
+        bool | None,
+        typer.Option("--llm-thinking/--no-llm-thinking", help="Enable LLM thinking."),
+    ] = None,
+    llm_timeout: Annotated[
+        float | None, typer.Option("--llm-timeout", help="LLM timeout in seconds.")
+    ] = None,
+    llm_retries: Annotated[
+        int | None, typer.Option("--llm-retries", help="LLM retry count.")
+    ] = None,
+    llm_planner_max_tokens: Annotated[
+        int | None,
+        typer.Option("--llm-planner-max-tokens", help="Planner output-token budget."),
+    ] = None,
+    llm_selector_max_tokens: Annotated[
+        int | None,
+        typer.Option("--llm-selector-max-tokens", help="Selector output-token budget."),
+    ] = None,
+    llm_summarizer_max_tokens: Annotated[
+        int | None,
+        typer.Option(
+            "--llm-summarizer-max-tokens", help="Summarizer output-token budget."
+        ),
+    ] = None,
 ) -> None:
     """Research technical topics with local documents and offline tools."""
+    ctx.ensure_object(dict)
+    ctx.obj["llm_overrides"] = {
+        "base_url": llm_base_url,
+        "model": llm_model,
+        "response_format": llm_response_format,
+        "thinking": llm_thinking,
+        "timeout": llm_timeout,
+        "retries": llm_retries,
+        "planner_max_tokens": llm_planner_max_tokens,
+        "selector_max_tokens": llm_selector_max_tokens,
+        "summarizer_max_tokens": llm_summarizer_max_tokens,
+    }
 
 
 def _input_error(message: str) -> None:
@@ -104,6 +159,14 @@ def _create_context(documents_dir: Path, output_dir: Path) -> ToolContext:
     )
 
 
+def _allow_llm_fallback() -> bool:
+    agent_config = load_project_config().get("agent", {})
+    return (
+        isinstance(agent_config, dict)
+        and agent_config.get("allow_fallback", True) is True
+    )
+
+
 def _run_workflow(
     query: str,
     documents_dir: Path,
@@ -112,6 +175,7 @@ def _run_workflow(
     agent_mode: str = "rule",
     enable_web: bool = False,
     allowed_domains: tuple[str, ...] = (),
+    llm_overrides: dict[str, object] | None = None,
 ) -> tuple[AgentState, ToolContext]:
     context = _create_context(documents_dir, output_dir)
     registry = ToolRegistry()
@@ -128,17 +192,37 @@ def _run_workflow(
         selector = WebStateSelector(allowed_domains=allowed_domains)
     if agent_mode == "llm":
         try:
-            provider = _create_llm_provider()
-        except LLMError:
-            pass
+            llm_config = LLMConfig.resolve(cli=llm_overrides)
+            provider = _create_llm_provider(llm_config)
+        except LLMConfigurationError:
+            if not _allow_llm_fallback():
+                raise
+            typer.echo("LLM 配置不完整，已回退到规则模式")
         else:
             model_name = getattr(provider, "model_name", "configured-llm")
-            planner = LLMPlanner(provider, planner, model_name=model_name)
-            selector = LLMSelector(provider, selector, model_name=model_name)
+            planner = LLMPlanner(
+                provider,
+                planner,
+                model_name=model_name,
+                max_output_tokens=llm_config.planner_max_tokens,
+                response_format=llm_config.response_format,
+                thinking=llm_config.thinking,
+            )
+            selector = LLMSelector(
+                provider,
+                selector,
+                model_name=model_name,
+                max_output_tokens=llm_config.selector_max_tokens,
+                response_format=llm_config.response_format,
+                thinking=llm_config.thinking,
+            )
             summarizer = LLMSummarizer(
                 provider,
                 summarizer,
                 model_name=model_name,
+                max_output_tokens=llm_config.summarizer_max_tokens,
+                response_format=llm_config.response_format,
+                thinking=llm_config.thinking,
                 allowed_domains=allowed_domains,
             )
     runner = AgentRunner(
@@ -247,22 +331,85 @@ def evaluate(
 
 
 @app.command("llm-check")
-def llm_check() -> None:
-    """Validate optional LLM configuration and structured JSON output."""
+def llm_check(ctx: typer.Context) -> None:
+    """Validate planner, selector, and summarizer structured LLM output."""
     try:
-        result, usage = _create_llm_provider().complete_structured(
-            LLMRequest(user_prompt='Return JSON exactly: {"status":"ok"}'),
-            LLMCheckOutput,
+        config = LLMConfig.resolve(cli=ctx.obj["llm_overrides"])
+        provider = _create_llm_provider(config)
+        model_name = getattr(provider, "model_name", "configured-llm")
+        planner = LLMPlanner(
+            provider,
+            RulePlanner(),
+            model_name=model_name,
+            max_output_tokens=config.planner_max_tokens,
+            response_format=config.response_format,
+            thinking=config.thinking,
         )
+        plan = planner.create_plan("tool calling")
+        state = AgentState(
+            run_id="llm-check",
+            query="tool calling",
+            status=AgentStatus.RUNNING,
+            plan=plan,
+        )
+        selector = LLMSelector(
+            provider,
+            StateSelector(),
+            model_name=model_name,
+            max_output_tokens=config.selector_max_tokens,
+            response_format=config.response_format,
+            thinking=config.thinking,
+        )
+        selector.select(state)
+        summarizer = LLMSummarizer(
+            provider,
+            ExtractiveSummarizer(),
+            model_name=model_name,
+            max_output_tokens=config.summarizer_max_tokens,
+            response_format=config.response_format,
+            thinking=config.thinking,
+        )
+        summarizer.summarize(
+            "tool calling",
+            [
+                ReadDocumentOutput(
+                    path="llm-check-source.md",
+                    title="LLM check source",
+                    content="This is a verified source supplied to llm-check.",
+                    char_count=48,
+                )
+            ],
+        )
+        components = (planner, selector, summarizer)
     except LLMError as exc:
         _input_error(str(exc))
-    typer.echo(f"status: {result.status}")
-    typer.echo(f"input_tokens: {usage.input_tokens}")
-    typer.echo(f"output_tokens: {usage.output_tokens}")
+    accepted = True
+    for component in components:
+        decision = component.last_decision
+        if decision is None:
+            accepted = False
+            typer.echo(f"{component.__class__.__name__}: no decision")
+            continue
+        typer.echo(
+            f"{decision.component}: success={decision.success} "
+            f"fallback={decision.fallback} finish_reason={decision.finish_reason} "
+            f"usage={decision.input_tokens}/{decision.output_tokens} "
+            f"error_type={decision.error_type} diagnostic={decision.diagnostic}"
+        )
+        accepted = accepted and (
+            decision.success
+            and not decision.fallback
+            and decision.finish_reason == "stop"
+            and decision.input_tokens > 0
+            and decision.output_tokens > 0
+        )
+    if not accepted:
+        _input_error("LLM validation did not meet the acceptance criteria")
 
 
 @app.command("run")
 def run_agent(
+    ctx: typer.Context,
     query: Annotated[
         str | None,
         typer.Argument(help="Research question to investigate."),
@@ -289,7 +436,10 @@ def run_agent(
     ] = False,
     allowed_domain: Annotated[
         list[str] | None,
-        typer.Option("--allowed-domain", help="Allowed web source domain."),
+        typer.Option(
+            "--allowed-domain",
+            help="Allowed web source domain; repeat to allow multiple domains.",
+        ),
     ] = None,
     verbose: Annotated[
         bool,
@@ -311,6 +461,7 @@ def run_agent(
             agent_mode,
             enable_web,
             tuple(allowed_domain or ()),
+            ctx.obj["llm_overrides"],
         )
     except WebSearchConfigurationError as exc:
         _input_error(str(exc))

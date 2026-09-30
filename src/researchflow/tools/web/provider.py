@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Protocol
 from urllib.request import Request, urlopen
 
+from researchflow.config import load_local_secrets, load_project_config, value
 from researchflow.tools.web.models import WebSearchResult
 
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
@@ -22,7 +23,12 @@ class WebSearchConfigurationError(WebSearchError):
 class WebSearchProvider(Protocol):
     """Synchronous provider for normalized web search candidates."""
 
-    def search(self, query: str, limit: int) -> list[WebSearchResult]: ...
+    def search(
+        self,
+        query: str,
+        limit: int,
+        allowed_domains: tuple[str, ...] = (),
+    ) -> list[WebSearchResult]: ...
 
 
 class TavilySearchProvider:
@@ -46,13 +52,28 @@ class TavilySearchProvider:
     @classmethod
     def from_environment(cls) -> "TavilySearchProvider":
         """Construct the adapter from the only supported credential location."""
-        return cls(os.getenv("RESEARCHFLOW_SEARCH_API_KEY", ""))
+        load_local_secrets()
+        config = load_project_config()
+        return cls(
+            os.getenv("RESEARCHFLOW_SEARCH_API_KEY", ""),
+            timeout=float(value(config, "web", "timeout", 20)),
+        )
 
-    def search(self, query: str, limit: int) -> list[WebSearchResult]:
+    def search(
+        self,
+        query: str,
+        limit: int,
+        allowed_domains: tuple[str, ...] = (),
+    ) -> list[WebSearchResult]:
         """Search Tavily and normalize its result fields without leaking secrets."""
-        payload = json.dumps(
-            {"api_key": self._api_key, "query": query, "max_results": limit}
-        ).encode("utf-8")
+        request_data: dict[str, object] = {
+            "api_key": self._api_key,
+            "query": query,
+            "max_results": limit,
+        }
+        if allowed_domains:
+            request_data["include_domains"] = list(allowed_domains)
+        payload = json.dumps(request_data).encode("utf-8")
         request = Request(
             TAVILY_SEARCH_URL,
             data=payload,

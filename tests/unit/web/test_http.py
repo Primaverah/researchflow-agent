@@ -75,6 +75,27 @@ def test_fetch_prefers_main_content_and_discards_page_chrome() -> None:
     assert "metadata" not in page.content
 
 
+def test_fetch_discards_version_and_theme_switcher_noise() -> None:
+    client = SafeHttpClient(
+        opener=lambda url, timeout: FakeResponse(
+            (
+                b"<html><title>Python docs</title><body>"
+                b'<div class="version-switcher">Python 3.13.12 documentation</div>'
+                b'<div class="theme-switcher">Theme Light Dark</div>'
+                b"<p>Python 3.13 adds supported free-threaded mode.</p>"
+                b"</body></html>"
+            ),
+            "text/html",
+            url,
+        ),
+        resolver=public_resolver,
+    )
+
+    page = client.fetch("https://docs.python.org/3.13/whatsnew/3.13.html")
+
+    assert page.content == "Python 3.13 adds supported free-threaded mode."
+
+
 @pytest.mark.parametrize("url", ["file:///etc/passwd", "http://localhost/x"])
 def test_fetch_rejects_unsafe_urls(url: str) -> None:
     client = SafeHttpClient(opener=lambda *_: None, resolver=public_resolver)

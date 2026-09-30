@@ -21,10 +21,48 @@ runner = CliRunner()
 
 
 class FakeCheckProvider(BaseLLMProvider):
+    def __init__(self) -> None:
+        self.requests = []
+        self._responses = iter(
+            [
+                {
+                    "steps": [
+                        {
+                            "step_id": "search",
+                            "description": "Search",
+                            "tool_name": "search_documents",
+                        },
+                        {
+                            "step_id": "read",
+                            "description": "Read",
+                            "tool_name": "read_document",
+                        },
+                        {"step_id": "summarize", "description": "Summarize"},
+                        {
+                            "step_id": "save",
+                            "description": "Save",
+                            "tool_name": "save_note",
+                        },
+                    ]
+                },
+                {
+                    "action_type": "search",
+                    "tool_name": "search_documents",
+                    "arguments": {"query": "tool calling", "limit": 5},
+                },
+                {
+                    "summary": "The supplied source is available.",
+                    "source_paths": ["llm-check-source.md"],
+                },
+            ]
+        )
+
     def complete(self, request):
+        self.requests.append(request)
         return LLMResponse(
-            content='{"status":"ok"}',
+            content=json.dumps(next(self._responses)),
             usage=TokenUsage(input_tokens=1, output_tokens=1),
+            finish_reason="stop",
         )
 
 
@@ -129,6 +167,7 @@ def test_run_help_lists_modes_and_options() -> None:
     assert "--output-dir" in result.stdout
     assert "--max-steps" in result.stdout
     assert "--agent-mode" in result.stdout
+    assert "--allowed-domain" in result.stdout
     assert "--verbose" in result.stdout
 
 
@@ -142,20 +181,30 @@ def test_version_is_available() -> None:
 def test_llm_check_uses_structured_fake_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cli, "_create_llm_provider", FakeCheckProvider)
+    monkeypatch.setenv("RESEARCHFLOW_LLM_API_KEY", "test-key")
+    provider = FakeCheckProvider()
+    monkeypatch.setattr(cli, "_create_llm_provider", lambda _config: provider)
 
     result = runner.invoke(app, ["llm-check"])
 
     assert result.exit_code == 0
-    assert "status: ok" in result.stdout
-    assert "input_tokens: 1" in result.stdout
+    assert "planner: success=True" in result.stdout
+    assert "selector: success=True" in result.stdout
+    assert "summarizer: success=True" in result.stdout
+    assert "success=True" in result.stdout
+    assert "fallback=False" in result.stdout
+    assert "finish_reason=stop" in result.stdout
+    assert "llm-check-source.md" in provider.requests[2].user_prompt
 
 
 def test_llm_agent_mode_runs_with_fake_provider_and_records_decisions(
     cli_paths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     documents, output = cli_paths
-    monkeypatch.setattr(cli, "_create_llm_provider", FakeAgentProvider)
+    monkeypatch.setenv("RESEARCHFLOW_LLM_API_KEY", "test-key")
+    monkeypatch.setattr(
+        cli, "_create_llm_provider", lambda _config: FakeAgentProvider()
+    )
 
     result = invoke_run(documents, output, "--agent-mode", "llm")
 
@@ -171,8 +220,9 @@ def test_llm_agent_mode_falls_back_to_rule_mode_without_configuration(
     cli_paths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     documents, output = cli_paths
+    monkeypatch.delenv("RESEARCHFLOW_LLM_API_KEY", raising=False)
 
-    def missing_provider():
+    def missing_provider(_config):
         raise LLMConfigurationError("LLM API key is not configured")
 
     monkeypatch.setattr(cli, "_create_llm_provider", missing_provider)
@@ -180,6 +230,7 @@ def test_llm_agent_mode_falls_back_to_rule_mode_without_configuration(
     result = invoke_run(documents, output, "--agent-mode", "llm")
 
     assert result.exit_code == 0
+    assert "LLM 配置不完整，已回退到规则模式" in result.stdout
     trace = next((output / "traces").glob("*.jsonl"))
     assert "llm_decision" not in trace.read_text(encoding="utf-8")
 
@@ -189,6 +240,9 @@ def test_web_mode_requires_explicit_search_configuration(
 ) -> None:
     documents, output = cli_paths
     monkeypatch.delenv("RESEARCHFLOW_SEARCH_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "researchflow.tools.web.provider.load_local_secrets", lambda: None
+    )
 
     result = invoke_run(documents, output, "--enable-web")
 

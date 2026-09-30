@@ -151,6 +151,7 @@ activemq-data/
 .env
 .env.*
 !.env.example
+.env.local
 .envrc
 .venv
 env/
