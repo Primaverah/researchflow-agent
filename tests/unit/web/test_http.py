@@ -8,9 +8,14 @@ from researchflow.tools.web.http import SafeHttpClient, WebFetchError
 
 
 class FakeResponse:
-    def __init__(self, body: bytes, content_type: str, url: str) -> None:
+    def __init__(
+        self, body: bytes, content_type: str, url: str, charset: str | None = None
+    ) -> None:
         self._body = body
-        self.headers = SimpleNamespace(get_content_type=lambda: content_type)
+        self.headers = SimpleNamespace(
+            get_content_type=lambda: content_type,
+            get_content_charset=lambda: charset,
+        )
         self._url = url
 
     def read(self, size: int = -1) -> bytes:
@@ -44,6 +49,24 @@ def test_fetch_accepts_public_html_and_extracts_title_and_text() -> None:
 
     assert page.title == "Example"
     assert page.content == "Hello world"
+
+
+def test_fetch_decodes_gbk_header_and_meta_content() -> None:
+    html = (
+        "<html><head><meta charset=gbk><title>成龙作品</title></head>"
+        "<body>出生日期</body></html>"
+    )
+    client = SafeHttpClient(
+        opener=lambda url, timeout: FakeResponse(
+            html.encode("gbk"), "text/html", url, "gbk"
+        ),
+        resolver=public_resolver,
+    )
+
+    page = client.fetch("https://example.com/gbk")
+
+    assert page.title == "成龙作品"
+    assert page.content == "出生日期"
 
 
 def test_fetch_prefers_main_content_and_discards_page_chrome() -> None:

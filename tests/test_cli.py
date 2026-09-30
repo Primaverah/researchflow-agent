@@ -235,6 +235,39 @@ def test_llm_agent_mode_falls_back_to_rule_mode_without_configuration(
     assert "llm_decision" not in trace.read_text(encoding="utf-8")
 
 
+def test_chat_llm_mode_falls_back_without_configuration(
+    cli_paths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    documents, output = cli_paths
+    monkeypatch.delenv("RESEARCHFLOW_LLM_API_KEY", raising=False)
+    monkeypatch.setattr(
+        cli,
+        "_create_llm_provider",
+        lambda _config: (_ for _ in ()).throw(
+            LLMConfigurationError("LLM API key is not configured")
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "工具调用",
+            "--session-id",
+            "fallback-chat",
+            "--agent-mode",
+            "llm",
+            "--documents-dir",
+            str(documents),
+            "--output-dir",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "LLM 配置不完整，已回退到规则模式" in result.stdout
+
+
 def test_web_mode_requires_explicit_search_configuration(
     cli_paths, monkeypatch: pytest.MonkeyPatch
 ) -> None:

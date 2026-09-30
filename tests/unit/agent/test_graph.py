@@ -12,6 +12,7 @@ from researchflow.agent import (
     StateSelector,
     WebRulePlanner,
 )
+from researchflow.agent.llm_components import LLMDecision
 from researchflow.domain import (
     AgentStatus,
     ExecutionStatus,
@@ -49,6 +50,18 @@ class FakeExecutor:
         self.events.append(payload)
 
 
+class DecisionPlanner(RulePlanner):
+    def create_plan(self, query: str):
+        self.last_decision = LLMDecision(
+            component="planner",
+            model="test-model",
+            input_tokens=1,
+            output_tokens=1,
+            finish_reason="stop",
+        )
+        return super().create_plan(query)
+
+
 def make_result(call: ToolCall, *, success: bool = True, output=None) -> ToolResult:
     return ToolResult(
         call_id=call.call_id,
@@ -72,6 +85,25 @@ def test_graph_state_is_serializable_and_routes_are_side_effect_free() -> None:
     assert AgentGraphState.model_validate_json(state.model_dump_json()) == state
     assert GraphAgentRunner.route(state) is GraphNode.PLAN
     assert GraphNode.ASSESS_EVIDENCE.value == "assess_evidence"
+
+
+def test_graph_records_dataclass_llm_decision_without_model_dump(
+    tmp_path: Path,
+) -> None:
+    executor = FakeExecutor(
+        lambda call: make_result(
+            call,
+            output={"hits": []}
+            if call.tool_name == "search_documents"
+            else {"path": "notes/graph.md", "char_count": 1},
+        )
+    )
+
+    state = GraphAgentRunner(
+        DecisionPlanner(), StateSelector(), ExtractiveSummarizer(), executor
+    ).run("decision", make_context(tmp_path))
+
+    assert state.decision_traces[0].component == "planner"
 
 
 def test_graph_deduplicates_candidates_and_uses_only_successful_reads(

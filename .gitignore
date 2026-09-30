@@ -208,6 +208,9 @@ tempCodeRunnerFile.py
 
 # Generated output, logs, and temporary files
 output/
+output/sessions/
+*.sqlite3-wal
+*.sqlite3-shm
 outputs/
 tmp/
 temp/

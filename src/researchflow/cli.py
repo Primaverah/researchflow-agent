@@ -14,10 +14,12 @@ from researchflow.agent import (
     AgentRunner,
     ExtractiveSummarizer,
     GraphAgentRunner,
+    LangGraphSessionRunner,
     LLMPlanner,
     LLMSelector,
     LLMSummarizer,
     RulePlanner,
+    SessionCatalog,
     StateSelector,
     WebRulePlanner,
     WebStateSelector,
@@ -45,6 +47,8 @@ app = typer.Typer(
     help="Research technical topics with local documents and offline tools.",
     no_args_is_help=True,
 )
+sessions_app = typer.Typer(help="Manage persisted chat sessions.")
+app.add_typer(sessions_app, name="sessions")
 
 
 class LLMCheckOutput(BaseModel):
@@ -178,6 +182,36 @@ def _graph_options() -> dict[str, int]:
     return {
         name: value for name in names if isinstance((value := graph.get(name)), int)
     }
+
+
+def _session_database(output_dir: Path) -> Path:
+    return output_dir / "sessions" / "checkpoints.sqlite3"
+
+
+def _session_runner(
+    documents_dir: Path,
+    output_dir: Path,
+    *,
+    agent_mode: str,
+    enable_web: bool,
+    allowed_domains: tuple[str, ...],
+    llm_overrides: dict[str, object] | None,
+) -> LangGraphSessionRunner:
+    def research(query: str) -> str:
+        state, _ = _run_workflow(
+            query,
+            documents_dir,
+            output_dir,
+            10,
+            agent_mode,
+            enable_web,
+            allowed_domains,
+            llm_overrides,
+            "graph",
+        )
+        return state.final_answer or "未找到相关文档。"
+
+    return LangGraphSessionRunner(_session_database(output_dir), research)
 
 
 def _run_workflow(
@@ -510,3 +544,69 @@ def run_agent(
         save_result is not None and not save_result.success
     ):
         raise typer.Exit(code=1)
+
+
+@app.command("chat")
+def chat(
+    ctx: typer.Context,
+    message: Annotated[str | None, typer.Argument(help="Message to research.")] = None,
+    session_id: Annotated[str | None, typer.Option("--session-id")] = None,
+    documents_dir: Annotated[Path, typer.Option("--documents-dir")] = Path(
+        "examples/documents"
+    ),
+    output_dir: Annotated[Path, typer.Option("--output-dir")] = Path("output"),
+    agent_mode: Annotated[
+        str, typer.Option("--agent-mode", help="Agent mode: rule or llm.")
+    ] = "rule",
+    enable_web: Annotated[
+        bool, typer.Option("--enable-web", help="Enable Tavily web search.")
+    ] = False,
+    allowed_domain: Annotated[
+        list[str] | None,
+        typer.Option("--allowed-domain", help="Allowed web domain; repeatable."),
+    ] = None,
+) -> None:
+    """Run one persisted research chat turn."""
+    if agent_mode not in {"rule", "llm"}:
+        _input_error("--agent-mode 必须为 rule 或 llm")
+    session_runner = _session_runner(
+        documents_dir,
+        output_dir,
+        agent_mode=agent_mode,
+        enable_web=enable_web,
+        allowed_domains=tuple(allowed_domain or ()),
+        llm_overrides=ctx.obj["llm_overrides"],
+    )
+    resolved_session = session_id or uuid4().hex
+    try:
+        content = message if message is not None else typer.prompt("消息")
+        result = session_runner.chat(content, session_id=resolved_session)
+        if result.interrupted:
+            result = session_runner.resume(
+                resolved_session, typer.prompt(result.prompt or "澄清")
+            )
+        typer.echo(f"session_id: {resolved_session}")
+        typer.echo(result.response)
+    except WebSearchConfigurationError as exc:
+        _input_error(str(exc))
+    finally:
+        session_runner.close()
+
+
+@sessions_app.command("list")
+def list_sessions(
+    output_dir: Annotated[Path, typer.Option("--output-dir")] = Path("output"),
+) -> None:
+    """List known session identifiers."""
+    for record in SessionCatalog(_session_database(output_dir)).list():
+        typer.echo(f"{record.session_id}\t{record.updated_at.isoformat()}")
+
+
+@sessions_app.command("delete")
+def delete_session(
+    session_id: Annotated[str, typer.Argument(help="Exact session identifier.")],
+    output_dir: Annotated[Path, typer.Option("--output-dir")] = Path("output"),
+) -> None:
+    """Delete one exact session and its checkpoints."""
+    if not SessionCatalog(_session_database(output_dir)).delete(session_id):
+        _input_error("会话不存在")
