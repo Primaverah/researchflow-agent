@@ -44,7 +44,7 @@ def test_tavily_search_posts_environment_key_and_maps_utf8_results() -> None:
 
     provider = TavilySearchProvider("test-key", opener=opener)
 
-    results = provider.search("网页安全", 3)
+    results = provider.search("网页安全", 3, ("docs.python.org",))
 
     assert [(item.title, item.url, item.summary) for item in results] == [
         ("中文来源", "https://example.com/article", "安全的网页摘要")
@@ -56,6 +56,7 @@ def test_tavily_search_posts_environment_key_and_maps_utf8_results() -> None:
         "api_key": "test-key",
         "query": "网页安全",
         "max_results": 3,
+        "include_domains": ["docs.python.org"],
     }
 
 
@@ -63,6 +64,9 @@ def test_tavily_provider_requires_environment_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("RESEARCHFLOW_SEARCH_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "researchflow.tools.web.provider.load_local_secrets", lambda: None
+    )
 
     with pytest.raises(WebSearchConfigurationError, match="SEARCH_API_KEY"):
         TavilySearchProvider.from_environment()

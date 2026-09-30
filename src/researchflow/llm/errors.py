@@ -2,7 +2,11 @@
 
 
 class LLMError(RuntimeError):
-    pass
+    def __init__(
+        self, message: str, diagnostic: dict[str, object] | None = None
+    ) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic or {}
 
 
 class LLMConfigurationError(LLMError):
@@ -10,4 +14,16 @@ class LLMConfigurationError(LLMError):
 
 
 class LLMStructuredOutputError(LLMError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        diagnostic: dict[str, object] | None = None,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        finish_reason: str = "unknown",
+    ) -> None:
+        super().__init__(message, diagnostic)
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.finish_reason = finish_reason

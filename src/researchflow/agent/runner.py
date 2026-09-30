@@ -106,6 +106,7 @@ class AgentRunner:
                 continue
 
             state.current_step_id = None
+            self._converge_plan(state)
             state.status = (
                 AgentStatus.FAILED
                 if self._search_failed(state)
@@ -136,16 +137,17 @@ class AgentRunner:
         state.tool_results.append(result)
         state.traces.append(trace)
 
-        if step_id in {"search", "save"}:
-            if result.success:
-                step.result_summary = f"{action.tool_name} completed"
-                step.status = PlanStepStatus.COMPLETED
-            else:
-                self._mark_failed(
-                    state,
-                    step_id,
-                    result.error_message or "tool execution failed",
-                )
+        if result.success:
+            step.result_summary = f"{action.tool_name} completed"
+            step.status = PlanStepStatus.COMPLETED
+        elif step_id in {"search", "web_search", "save"}:
+            self._mark_failed(
+                state,
+                step_id,
+                result.error_message or "tool execution failed",
+            )
+        else:
+            step.status = PlanStepStatus.PENDING
         self._touch(state)
         return result
 
@@ -223,6 +225,16 @@ class AgentRunner:
         )
 
     @staticmethod
+    def _converge_plan(state: AgentState) -> None:
+        """Ensure a completed run cannot retain an active plan step."""
+        if state.plan is None:
+            return
+        for step in state.plan.steps:
+            if step.status in {PlanStepStatus.PENDING, PlanStepStatus.RUNNING}:
+                step.status = PlanStepStatus.SKIPPED
+                step.result_summary = "not completed before agent finished"
+
+    @staticmethod
     def _step(state: AgentState, step_id: str) -> PlanStep:
         if state.plan is None:
             raise RuntimeError("agent state has no plan")
@@ -260,9 +272,12 @@ class AgentRunner:
             model=decision.model,
             input_tokens=decision.input_tokens,
             output_tokens=decision.output_tokens,
+            success=decision.success,
             fallback=decision.fallback,
             fallback_reason=decision.fallback_reason,
             error_type=decision.error_type,
+            finish_reason=decision.finish_reason,
+            diagnostic=decision.diagnostic,
         )
         state.decision_traces.append(trace)
         record_decision = getattr(self._executor, "record_decision", None)

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from researchflow.domain import ExecutionStatus, ExecutionTrace
+from researchflow.domain import DecisionTrace, ExecutionStatus, ExecutionTrace
 from researchflow.execution import JsonlTraceRecorder, TraceRecordingError
 from researchflow.tools import ToolContext
 
@@ -102,3 +102,50 @@ def test_write_failure_raises_clear_error(tmp_path: Path) -> None:
 
     with pytest.raises(TraceRecordingError, match="trace"):
         JsonlTraceRecorder().record(make_trace(), context)
+
+
+def test_decision_trace_records_success_fallback_and_finish_reason(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    decision = DecisionTrace(
+        component="planner",
+        model="fake-model",
+        input_tokens=3,
+        output_tokens=2,
+        success=True,
+        fallback=False,
+        fallback_reason=None,
+        finish_reason="stop",
+    )
+
+    JsonlTraceRecorder().record_decision(decision, context)
+
+    record = json.loads(
+        (context.output_directory / "traces" / "run-1.jsonl").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert record["success"] is True
+    assert record["fallback_reason"] is None
+    assert record["finish_reason"] == "stop"
+    assert record["usage"] == {"input_tokens": 3, "output_tokens": 2}
+
+
+def test_decision_trace_redacts_secrets_from_diagnostic(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    decision = DecisionTrace(
+        component="planner",
+        model="fake-model",
+        input_tokens=3,
+        output_tokens=2,
+        diagnostic={"content_preview": "Bearer sk-secret-value"},
+    )
+
+    JsonlTraceRecorder().record_decision(decision, context)
+
+    content = (context.output_directory / "traces" / "run-1.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "sk-secret-value" not in content
+    assert "[REDACTED]" in content

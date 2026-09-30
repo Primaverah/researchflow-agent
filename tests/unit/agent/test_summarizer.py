@@ -64,3 +64,65 @@ def test_summarizer_uses_successfully_fetched_web_source_as_evidence() -> None:
 
     assert "Python feature evidence" in report
     assert "[1] Python docs — https://docs.python.org" in report
+
+
+def test_summarizer_cites_only_sources_with_selected_evidence() -> None:
+    report = ExtractiveSummarizer(allowed_domains=("docs.python.org",)).summarize(
+        "Python",
+        [],
+        [
+            WebSource(
+                title="Official docs",
+                url="https://docs.python.org/3/",
+                summary="",
+                accessed_at=datetime.now(UTC),
+                content="Python official evidence.",
+            ),
+            WebSource(
+                title="Empty source",
+                url="https://docs.python.org/empty",
+                summary="",
+                accessed_at=datetime.now(UTC),
+                content="# Only a heading",
+            ),
+            WebSource(
+                title="Blocked source",
+                url="https://example.com/python",
+                summary="",
+                accessed_at=datetime.now(UTC),
+                content="Python untrusted evidence.",
+            ),
+        ],
+    )
+
+    assert "Official docs" in report
+    assert "Empty source" not in report
+    assert "Blocked source" not in report
+
+
+def test_summarizer_merges_one_topic_and_cites_only_supporting_sources() -> None:
+    report = ExtractiveSummarizer().summarize(
+        "Python 3.13",
+        [],
+        [
+            WebSource(
+                title="Free-threaded mode",
+                url="https://docs.python.org/3.13/whatsnew/3.13.html",
+                summary="",
+                accessed_at=datetime.now(UTC),
+                content="Python 3.13 adds a free-threaded build.",
+            ),
+            WebSource(
+                title="Typing changes",
+                url="https://docs.python.org/3.13/library/typing.html",
+                summary="",
+                accessed_at=datetime.now(UTC),
+                content="Python 3.13 improves typing support.",
+            ),
+        ],
+    )
+
+    assert report.count("- Python 3.13：") == 1
+    assert "[1, 2]" in report
+    assert "[1] Free-threaded mode" in report
+    assert "[2] Typing changes" in report

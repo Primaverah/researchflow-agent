@@ -171,9 +171,12 @@ class DecisionTrace(DomainModel):
     model: NonEmptyString
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
+    success: bool = True
     fallback: bool = False
     fallback_reason: NonEmptyString | None = None
     error_type: NonEmptyString | None = None
+    finish_reason: NonEmptyString = "completed"
+    diagnostic: dict[str, object] | None = None
 
 
 class AgentState(DomainModel):

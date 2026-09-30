@@ -7,6 +7,8 @@ from researchflow.agent import (
     ExtractiveSummarizer,
     RulePlanner,
     StateSelector,
+    WebRulePlanner,
+    WebStateSelector,
 )
 from researchflow.domain import (
     AgentStatus,
@@ -206,3 +208,68 @@ def test_state_owns_the_exact_trace_for_each_tool_call(tmp_path: Path) -> None:
     assert [trace.call_id for trace in state.traces] == [
         call.call_id for call in state.tool_calls
     ]
+
+
+def test_web_workflow_converges_all_plan_steps_before_finishing(tmp_path: Path) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return result(
+                call,
+                output={
+                    "results": [
+                        {
+                            "url": "https://docs.python.org/3/",
+                            "title": "Python docs",
+                            "summary": "",
+                        }
+                    ]
+                },
+            )
+        if call.tool_name == "fetch_url":
+            return result(
+                call,
+                output={
+                    "title": "Python docs",
+                    "url": "https://docs.python.org/3/",
+                    "summary": "",
+                    "accessed_at": "2026-01-01T00:00:00Z",
+                    "content": "Official Python evidence.",
+                },
+            )
+        return result(call, output={"path": "notes/run-1.md", "char_count": 1})
+
+    state = AgentRunner(
+        WebRulePlanner(),
+        WebStateSelector(allowed_domains=("docs.python.org",)),
+        ExtractiveSummarizer(allowed_domains=("docs.python.org",)),
+        FakeExecutor(handler),  # type: ignore[arg-type]
+    ).run("Python", context(tmp_path))
+
+    assert state.status is AgentStatus.COMPLETED
+    assert all(step.status is not PlanStepStatus.RUNNING for step in state.plan.steps)
+    assert "https://docs.python.org/3/" in state.final_answer
+
+
+def test_web_workflow_ends_without_sources_when_no_allowed_result_exists(
+    tmp_path: Path,
+) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return result(call, output={"results": []})
+        return result(call, output={"path": "notes/run-1.md", "char_count": 1})
+
+    state = AgentRunner(
+        WebRulePlanner(),
+        WebStateSelector(allowed_domains=("docs.python.org",)),
+        ExtractiveSummarizer(allowed_domains=("docs.python.org",)),
+        FakeExecutor(handler),  # type: ignore[arg-type]
+    ).run("Python", context(tmp_path))
+
+    assert state.status is AgentStatus.COMPLETED
+    assert "未找到相关文档" in state.final_answer
+    assert "https://" not in state.final_answer
+    assert "## 来源\n\n- 无" in state.final_answer
