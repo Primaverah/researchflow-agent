@@ -68,6 +68,7 @@ class AgentGraphState(DomainModel):
     candidates: list[GraphCandidate] = Field(default_factory=list)
     documents: list[ReadDocumentOutput] = Field(default_factory=list)
     web_sources: list[WebSource] = Field(default_factory=list)
+    rejected_sources: list[str] = Field(default_factory=list)
     replans: int = 0
     max_replans: int = 1
     replan_reason: str | None = None
@@ -257,18 +258,28 @@ class GraphAgentRunner:
                 )
         documents: list[ReadDocumentOutput] = []
         web_sources: list[WebSource] = []
+        rejected: list[str] = []
         for call, result, trace in self._parallel_calls(state, context, calls):
             self._append_tool(self._agent(state), call, result, trace)
             if not result.success:
                 continue
             if call.tool_name == "read_document":
-                documents.append(ReadDocumentOutput.model_validate(result.output))
+                document = ReadDocumentOutput.model_validate(result.output)
+                if self._is_relevant(state.query, document.title, document.content):
+                    documents.append(document)
+                else:
+                    rejected.append(document.path)
             else:
-                web_sources.append(WebSource.model_validate(result.output))
+                source = WebSource.model_validate(result.output)
+                if self._is_relevant(state.query, source.title, source.content):
+                    web_sources.append(source)
+                else:
+                    rejected.append(source.url)
         return {
             "agent": self._agent(state),
             "documents": documents,
             "web_sources": web_sources,
+            "rejected_sources": rejected,
         }
 
     def _synthesize(
@@ -351,6 +362,15 @@ class GraphAgentRunner:
             tool_name=name,
             arguments=arguments,
         )
+
+    @staticmethod
+    def _is_relevant(query: str, title: str, content: str) -> bool:
+        text = f"{title}\n{content}".casefold()
+        if any(term in query for term in ("代表作", "代表电影", "作品有哪些")):
+            return any(term in text for term in ("电影", "作品", "主演", "代表作"))
+        if any(term in query for term in ("出生日期", "年龄", "多大")):
+            return any(term in text for term in ("出生", "生于", "born"))
+        return True
 
     @staticmethod
     def _local_candidates(output: Any) -> list[GraphCandidate]:
@@ -437,6 +457,7 @@ class GraphAgentRunner:
                     "replan_reason": state.replan_reason,
                     "step_count": state.node_steps,
                     "source_count": len(state.documents) + len(state.web_sources),
+                    "rejected_sources": state.rejected_sources,
                     "end_reason": None
                     if state.end_reason is None
                     else state.end_reason.value,

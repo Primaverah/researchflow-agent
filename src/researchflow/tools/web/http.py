@@ -1,6 +1,7 @@
 """Safe, bounded retrieval of ordinary public HTML pages."""
 
 import ipaddress
+import re
 import socket
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -144,6 +145,7 @@ class SafeHttpClient:
                 content_type = response.headers.get_content_type()
                 if content_type != "text/html":
                     raise WebFetchError("web response is not HTML", "web_content_type")
+                charset = response.headers.get_content_charset()
                 body = response.read(self._max_bytes + 1)
         except WebFetchError:
             raise
@@ -159,7 +161,7 @@ class SafeHttpClient:
             raise WebFetchError("web response is too large", "web_response_too_large")
         try:
             parser = _TextExtractor()
-            parser.feed(body.decode("utf-8", errors="replace"))
+            parser.feed(self._decode_html(body, charset))
         except (ValueError, UnicodeError) as exc:
             raise WebFetchError(
                 "web page could not be read", "web_content_decode"
@@ -167,6 +169,22 @@ class SafeHttpClient:
         if not parser.content:
             raise WebFetchError("web page has no readable text", "web_empty_content")
         return HtmlPage(title=parser.title, content=parser.content, url=final_url)
+
+    @staticmethod
+    def _decode_html(body: bytes, header_charset: str | None) -> str:
+        """Decode header, then HTML declaration, then common Chinese encodings."""
+        match = re.search(
+            rb"<meta[^>]+charset=[\"']?([A-Za-z0-9_-]+)", body[:4096], re.I
+        )
+        meta_charset = match.group(1).decode("ascii", "ignore") if match else None
+        for charset in (header_charset, meta_charset, "utf-8", "gb18030", "gbk"):
+            if not charset:
+                continue
+            try:
+                return body.decode(charset)
+            except (LookupError, UnicodeDecodeError):
+                continue
+        return body.decode("utf-8", errors="replace")
 
     def _validate_url(self, url: str) -> None:
         parsed = urlparse(url)
