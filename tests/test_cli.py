@@ -11,6 +11,7 @@ from researchflow.cli import app
 from researchflow.llm import (
     BaseLLMProvider,
     LLMConfigurationError,
+    LLMDependencyError,
     LLMResponse,
     TokenUsage,
 )
@@ -197,6 +198,56 @@ def test_llm_check_uses_structured_fake_provider(
     assert "llm-check-source.md" in provider.requests[2].user_prompt
 
 
+def test_cli_loads_local_llm_configuration_before_llm_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    for name in (
+        "RESEARCHFLOW_LLM_API_KEY",
+        "RESEARCHFLOW_LLM_BASE_URL",
+        "RESEARCHFLOW_LLM_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / ".env.local").write_text(
+        "\n".join(
+            (
+                "RESEARCHFLOW_LLM_API_KEY=test-key",
+                "RESEARCHFLOW_LLM_BASE_URL=https://llm.example/v1",
+                "RESEARCHFLOW_LLM_MODEL=test-model",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    provider = FakeCheckProvider()
+    monkeypatch.setattr(cli, "_create_llm_provider", lambda _config: provider)
+
+    result = runner.invoke(app, ["llm-check"])
+
+    assert result.exit_code == 0
+    assert "planner: success=True" in result.stdout
+
+
+def test_llm_mode_reports_missing_optional_client_instead_of_fallback(
+    cli_paths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    documents, output = cli_paths
+    monkeypatch.setenv("RESEARCHFLOW_LLM_API_KEY", "test-key")
+    monkeypatch.setattr(
+        cli,
+        "_create_llm_provider",
+        lambda _config: (_ for _ in ()).throw(
+            LLMDependencyError("Install it with `uv sync --extra llm`")
+        ),
+    )
+
+    result = invoke_run(documents, output, "--agent-mode", "llm")
+
+    assert result.exit_code == 2
+    assert "uv sync --extra llm" in result.stderr
+    assert "已回退到规则模式" not in result.stdout
+
+
 def test_llm_agent_mode_runs_with_fake_provider_and_records_decisions(
     cli_paths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -276,6 +327,7 @@ def test_web_mode_requires_explicit_search_configuration(
     monkeypatch.setattr(
         "researchflow.tools.web.provider.load_local_secrets", lambda: None
     )
+    monkeypatch.setattr(cli, "load_local_secrets", lambda: None)
 
     result = invoke_run(documents, output, "--enable-web")
 

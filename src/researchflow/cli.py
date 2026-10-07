@@ -26,15 +26,17 @@ from researchflow.agent import (
     WebRulePlanner,
     WebStateSelector,
 )
-from researchflow.config import load_project_config
+from researchflow.config import load_local_secrets, load_project_config
 from researchflow.domain import AgentState, AgentStatus, ToolResult
 from researchflow.evaluation import evaluate_retriever
 from researchflow.execution import JsonlTraceRecorder, ToolExecutor
 from researchflow.llm import (
     LLMConfig,
     LLMConfigurationError,
+    LLMDependencyError,
     LLMError,
     OpenAICompatibleProvider,
+    require_openai_dependency,
 )
 from researchflow.tools import ToolContext, ToolRegistry
 from researchflow.tools.offline import ReadDocumentOutput, create_offline_tools
@@ -66,6 +68,7 @@ def terminal_safe_text(text: str, *, encoding: str | None = None) -> str:
 def _create_llm_provider(
     config: LLMConfig | None = None,
 ) -> OpenAICompatibleProvider:
+    require_openai_dependency()
     return OpenAICompatibleProvider(config or LLMConfig.resolve())
 
 
@@ -124,6 +127,7 @@ def main(
     ] = None,
 ) -> None:
     """Research technical topics with local documents and offline tools."""
+    load_local_secrets()
     ctx.ensure_object(dict)
     ctx.obj["llm_overrides"] = {
         "base_url": llm_base_url,
@@ -269,6 +273,8 @@ def _run_workflow(
             if not _allow_llm_fallback():
                 raise
             typer.echo("LLM 配置不完整，已回退到规则模式")
+        except LLMDependencyError:
+            raise
         else:
             model_name = getattr(provider, "model_name", "configured-llm")
             planner = LLMPlanner(
@@ -562,6 +568,8 @@ def run_agent(
         )
     except WebSearchConfigurationError as exc:
         _input_error(str(exc))
+    except LLMDependencyError as exc:
+        _input_error(str(exc))
     except typer.Exit:
         raise
     except Exception as exc:
@@ -622,6 +630,8 @@ def chat(
         typer.echo(f"session_id: {resolved_session}")
         typer.echo(terminal_safe_text(result.response))
     except WebSearchConfigurationError as exc:
+        _input_error(str(exc))
+    except LLMDependencyError as exc:
         _input_error(str(exc))
     finally:
         session_runner.close()

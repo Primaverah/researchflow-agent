@@ -99,8 +99,8 @@ maximum steps: 10
 
 ### Optional LLM configuration check
 
-Install the optional client with `uv sync --extra llm`, copy `.env.example` to
-`.env`, then set `RESEARCHFLOW_LLM_API_KEY`, `RESEARCHFLOW_LLM_BASE_URL`,
+Install the optional client with `uv sync --frozen --extra llm`, then create
+`.env.local` and set `RESEARCHFLOW_LLM_API_KEY`, `RESEARCHFLOW_LLM_BASE_URL`,
 `RESEARCHFLOW_LLM_MODEL`, and `RESEARCHFLOW_LLM_TIMEOUT`. Run
 `uv run researchflow llm-check` to validate a structured response. Keys are
 read only from the environment and are never recorded in traces or output.
@@ -113,8 +113,9 @@ uv run researchflow run "tool calling" --agent-mode llm
 
 `rule` is the default mode and remains fully offline. In `llm` mode, missing
 configuration or invalid structured model output falls back to the equivalent
-rule component. LLM decisions can select only the existing local search, read,
-and save tools. JSONL traces record sanitized decision component/model/token
+rule component. A missing optional client is a startup error (rather than a
+silent fallback): run `uv sync --frozen --extra llm`. LLM decisions can select
+only the existing local search, read, and save tools. JSONL traces record sanitized decision component/model/token
 usage metadata, never prompts, model output, or API keys.
 
 ### Optional web sources

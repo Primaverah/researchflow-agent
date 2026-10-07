@@ -138,9 +138,10 @@ SQLite 的 checkpointer 以 JSON 序列化持久化图状态；所有字段必�
 
 ## 7. 配置、输出与可观测性
 
-`.env.local` 由项目配置加载器读取；外层单/双引号会被移除，避免把引号作为 API key
-的一部分。环境变量优先级遵循加载器定义。密钥不写入 Pydantic 状态、Markdown、JSONL
-或终端诊断。
+CLI 启动时统一读取 `.env.local`；外层单/双引号会被移除，避免把引号作为 API key
+的一部分。支持的 LLM 密钥、base URL、模型名和超时设置以及搜索密钥均可由此提供，
+但进程环境变量仍优先。缺少 `openai` 可选依赖时，`--agent-mode llm` 会在工作流开始前
+给出安装命令而不会伪装成模型回退。密钥不写入 Pydantic 状态、Markdown、JSONL 或终端诊断。
 
 每个运行在输出目录写入：
 
