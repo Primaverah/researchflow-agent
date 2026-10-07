@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, ValidationError
 from researchflow.agent.models import AgentAction, AgentActionType
 from researchflow.agent.planner import RulePlanner
 from researchflow.agent.selector import StateSelector
-from researchflow.agent.summarizer import ExtractiveSummarizer
+from researchflow.agent.summarizer import ExtractiveSummarizer, SummaryGenerationStatus
 from researchflow.domain import AgentState, PlanStep, ResearchPlan
 from researchflow.llm import (
     BaseLLMProvider,
@@ -366,6 +366,7 @@ class LLMSummarizer(_LLMComponent):
         )
         self._fallback_summarizer = fallback
         self._allowed_domains = allowed_domains
+        self.last_generation_status = SummaryGenerationStatus(mode="extractive")
 
     def summarize(
         self,
@@ -425,12 +426,19 @@ class LLMSummarizer(_LLMComponent):
                 )
         except (LLMError, ValidationError, ValueError) as exc:
             self._fallback("summarizer", exc)
-            return self._fallback_summarizer.summarize(
+            report = self._fallback_summarizer.summarize(
                 query,
                 documents,
                 web_sources,
                 answer_language=answer_language,
             )
+            assert self.last_decision is not None
+            self.last_generation_status = SummaryGenerationStatus(
+                mode="extractive_fallback",
+                fallback_reason=self.last_decision.fallback_reason,
+                error_type=self.last_decision.error_type,
+            )
+            return report
         assert self.last_decision is not None
         self.last_decision = LLMDecision(
             component="summarizer",
@@ -447,6 +455,7 @@ class LLMSummarizer(_LLMComponent):
         ]
         if not source_lines:
             source_lines = ["- 无"]
+        self.last_generation_status = SummaryGenerationStatus(mode="llm_grounded")
         return "\n".join(
             [
                 "# 研究报告",

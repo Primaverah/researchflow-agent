@@ -2,13 +2,31 @@
 
 import re
 import unicodedata
+from typing import Literal
 
+from researchflow.domain.models import DomainModel
 from researchflow.tools.offline import ReadDocumentOutput
 from researchflow.tools.web import WebSource
 from researchflow.tools.web.domains import is_allowed_domain
 
 MAX_EXTRACTS_PER_DOCUMENT = 2
 MAX_EXTRACT_LENGTH = 240
+
+
+class SummaryGenerationStatus(DomainModel):
+    """Safe, user-visible outcome for one answer-generation attempt."""
+
+    mode: Literal["llm_grounded", "extractive_fallback", "extractive"]
+    fallback_reason: str | None = None
+    error_type: str | None = None
+
+    def render(self) -> str:
+        lines = [self.mode]
+        if self.fallback_reason:
+            lines.append(f"- 回退原因：{self.fallback_reason}")
+        if self.error_type:
+            lines.append(f"- 错误类型：{self.error_type}")
+        return "\n".join(lines)
 
 
 def _normalize(text: str) -> str:
@@ -20,6 +38,7 @@ class ExtractiveSummarizer:
 
     def __init__(self, allowed_domains: tuple[str, ...] = ()) -> None:
         self._allowed_domains = allowed_domains
+        self.last_generation_status = SummaryGenerationStatus(mode="extractive")
 
     def summarize(
         self,
@@ -30,6 +49,7 @@ class ExtractiveSummarizer:
         answer_language: str = "",
     ) -> str:
         """Return a stable report with source-supported thematic conclusions."""
+        self.last_generation_status = SummaryGenerationStatus(mode="extractive")
         evidence: list[tuple[str, int]] = []
         sources: list[tuple[str, str]] = []
         seen_sources: set[str] = set()

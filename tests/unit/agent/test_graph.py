@@ -107,6 +107,36 @@ def test_graph_records_dataclass_llm_decision_without_model_dump(
     assert state.decision_traces[0].component == "planner"
 
 
+def test_graph_reports_safe_summary_generation_status(tmp_path: Path) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(
+                call, output={"hits": [{"path": "evidence.md", "title": "Evidence"}]}
+            )
+        if call.tool_name == "read_document":
+            return make_result(
+                call,
+                output={
+                    "path": "evidence.md",
+                    "title": "Evidence",
+                    "content": "Validated source content.",
+                    "char_count": 25,
+                },
+            )
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    executor = FakeExecutor(handler)
+    state = GraphAgentRunner(
+        RulePlanner(), StateSelector(), ExtractiveSummarizer(), executor
+    ).run("proof", make_context(tmp_path))
+
+    assert "## 回答生成状态\n\nextractive" in state.final_answer
+    synthesis_event = next(
+        event for event in executor.events if event["node"] == "synthesize"
+    )
+    assert synthesis_event["generation_mode"] == "extractive"
+
+
 def test_graph_deduplicates_candidates_and_uses_only_successful_reads(
     tmp_path: Path,
 ) -> None:

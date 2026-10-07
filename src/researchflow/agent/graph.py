@@ -15,7 +15,7 @@ from pydantic import Field
 
 from researchflow.agent.planner import RulePlanner
 from researchflow.agent.selector import StateSelector
-from researchflow.agent.summarizer import ExtractiveSummarizer
+from researchflow.agent.summarizer import ExtractiveSummarizer, SummaryGenerationStatus
 from researchflow.domain import (
     AgentState,
     AgentStatus,
@@ -81,6 +81,9 @@ class AgentGraphState(DomainModel):
     attempted_candidates: list[str] = Field(default_factory=list)
     evidence_status: EvidenceStatus | None = None
     evidence_gaps: list[str] = Field(default_factory=list)
+    generation_mode: str | None = None
+    generation_fallback_reason: str | None = None
+    generation_error_type: str | None = None
     replans: int = 0
     max_replans: int = 1
     replan_reason: str | None = None
@@ -345,14 +348,25 @@ class GraphAgentRunner:
                 "agent": agent,
                 "end_reason": GraphEndReason.NO_RESULTS,
             }
-        agent.final_answer = self._summarizer.summarize(
+        answer = self._summarizer.summarize(
             state.answer_target,
             state.documents,
             state.web_sources,
             answer_language=state.answer_language,
         )
+        generation = getattr(self._summarizer, "last_generation_status", None)
+        if not isinstance(generation, SummaryGenerationStatus):
+            generation = SummaryGenerationStatus(mode="extractive")
+        agent.final_answer = "\n".join(
+            [answer, "", "## 回答生成状态", "", generation.render()]
+        )
         self._record_decision(agent, self._summarizer, context)
-        return {"agent": agent}
+        return {
+            "agent": agent,
+            "generation_mode": generation.mode,
+            "generation_fallback_reason": generation.fallback_reason,
+            "generation_error_type": generation.error_type,
+        }
 
     @staticmethod
     def _read_failure_report(state: AgentGraphState) -> str:
@@ -612,6 +626,9 @@ class GraphAgentRunner:
                     "end_reason": None
                     if state.end_reason is None
                     else state.end_reason.value,
+                    "generation_mode": state.generation_mode,
+                    "generation_fallback_reason": state.generation_fallback_reason,
+                    "generation_error_type": state.generation_error_type,
                 },
                 context,
             )

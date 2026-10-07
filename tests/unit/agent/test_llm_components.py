@@ -11,6 +11,7 @@ from researchflow.agent.web import WebRulePlanner
 from researchflow.domain import AgentState, AgentStatus
 from researchflow.llm import (
     BaseLLMProvider,
+    LLMError,
     LLMRequest,
     LLMResponse,
     LLMStructuredOutputError,
@@ -427,6 +428,34 @@ def test_llm_summarizer_receives_question_and_explicit_answer_language() -> None
     assert "什么是RAG？帮我查找3篇相关论文" in prompt
     assert "Simplified Chinese" in prompt
     assert "do not merely summarize" in prompt
+    assert summarizer.last_generation_status.mode == "llm_grounded"
+
+
+def test_llm_summarizer_reports_safe_provider_fallback_status() -> None:
+    class FailingProvider(BaseLLMProvider):
+        def complete(self, request: LLMRequest) -> LLMResponse:
+            raise LLMError("raw provider detail must not appear in the report")
+
+    summarizer = LLMSummarizer(
+        FailingProvider(), ExtractiveSummarizer(), model_name="fake-model"
+    )
+
+    report = summarizer.summarize(
+        "question",
+        [
+            ReadDocumentOutput(
+                path="evidence.md",
+                title="Evidence",
+                content="Validated source content.",
+                char_count=25,
+            )
+        ],
+    )
+
+    assert "Validated source content" in report
+    assert summarizer.last_generation_status.mode == "extractive_fallback"
+    assert summarizer.last_generation_status.fallback_reason == "provider_error"
+    assert "raw provider detail" not in summarizer.last_generation_status.render()
 
 
 def test_llm_summarizer_rejects_english_when_chinese_is_required() -> None:
