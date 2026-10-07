@@ -2,7 +2,11 @@
 
 from pathlib import Path
 
-from researchflow.agent.session import LangGraphSessionRunner, SessionCatalog
+from researchflow.agent.session import (
+    LangGraphSessionRunner,
+    SessionCatalog,
+    SessionResearchRequest,
+)
 
 
 def test_catalog_exact_delete_and_session_isolation(tmp_path: Path) -> None:
@@ -159,3 +163,32 @@ def test_checkpoint_can_be_loaded_by_a_new_runner(tmp_path: Path) -> None:
         database, research=lambda q: f"answer:{q}"
     ).get_state("persist")
     assert state["messages"][0]["content"] == "first"
+
+
+def test_language_only_follow_up_reuses_prior_research_and_passes_context(
+    tmp_path: Path,
+) -> None:
+    requests: list[SessionResearchRequest] = []
+    runner = LangGraphSessionRunner(
+        tmp_path / "checkpoints.sqlite3",
+        research=lambda query: query,
+        research_with_context=lambda request: (
+            requests.append(request)
+            or f"answer:{request.answer_target}:{request.answer_language}"
+        ),
+    )
+
+    runner.chat("什么是RAG？帮我查找3篇相关论文", session_id="rag")
+    result = runner.chat("用中文回答", session_id="rag")
+
+    state = runner.get_state("rag")
+    assert state["current_input"] == "用中文回答"
+    assert state["resolved_subject"] == "RAG"
+    assert state["standalone_query"] == "什么是RAG？帮我查找3篇相关论文"
+    assert state["answer_target"] == "什么是RAG？帮我查找3篇相关论文"
+    assert state["answer_language"] == "zh"
+    assert requests[-1].current_input == "用中文回答"
+    assert requests[-1].standalone_query == "什么是RAG？帮我查找3篇相关论文"
+    assert requests[-1].answer_target == "什么是RAG？帮我查找3篇相关论文"
+    assert requests[-1].answer_language == "zh"
+    assert result.response.endswith(":zh")

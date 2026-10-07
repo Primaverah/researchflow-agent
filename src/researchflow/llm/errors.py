@@ -13,6 +13,10 @@ class LLMConfigurationError(LLMError):
     pass
 
 
+class LLMDependencyError(LLMError):
+    """Raised when the selected LLM mode lacks its optional client package."""
+
+
 class LLMStructuredOutputError(LLMError):
     def __init__(
         self,

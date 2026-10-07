@@ -39,6 +39,7 @@ class _TextExtractor(HTMLParser):
     _IGNORED_TAGS = {"script", "style", "noscript", "template", "svg"}
     _CHROME_TAGS = {"nav", "aside", "header", "footer", "form"}
     _PRIMARY_TAGS = {"main", "article"}
+    _PRIMARY_TOKENS = {"article", "content", "post", "entry", "story", "detail"}
     _CHROME_TOKENS = {
         "ad",
         "ads",
@@ -61,6 +62,8 @@ class _TextExtractor(HTMLParser):
         self._chrome_depth = 0
         self._chrome_marker_tags: list[str] = []
         self._primary_depth = 0
+        self._primary_marker_tags: list[str] = []
+        self._anchor_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         normalized = tag.lower()
@@ -70,8 +73,11 @@ class _TextExtractor(HTMLParser):
         elif normalized in self._CHROME_TAGS or self._has_chrome_marker(attrs):
             self._chrome_depth += 1
             self._chrome_marker_tags.append(normalized)
-        elif normalized in self._PRIMARY_TAGS:
+        elif normalized in self._PRIMARY_TAGS or self._has_primary_marker(attrs):
             self._primary_depth += 1
+            self._primary_marker_tags.append(normalized)
+        if normalized == "a":
+            self._anchor_depth += 1
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.handle_starttag(tag, attrs)
@@ -81,18 +87,25 @@ class _TextExtractor(HTMLParser):
         normalized = tag.lower()
         if normalized == "title":
             self._in_title = False
+        if normalized == "a" and self._anchor_depth:
+            self._anchor_depth -= 1
         if normalized in self._IGNORED_TAGS and self._ignored_depth:
             self._ignored_depth -= 1
         elif self._chrome_marker_tags and self._chrome_marker_tags[-1] == normalized:
             self._chrome_marker_tags.pop()
             self._chrome_depth -= 1
-        elif normalized in self._PRIMARY_TAGS and self._primary_depth:
+        elif self._primary_marker_tags and self._primary_marker_tags[-1] == normalized:
+            self._primary_marker_tags.pop()
             self._primary_depth -= 1
 
     def handle_data(self, data: str) -> None:
         if self._in_title:
             self._title.append(data)
-        elif not self._ignored_depth and not self._chrome_depth:
+        elif (
+            not self._ignored_depth
+            and not self._chrome_depth
+            and not self._anchor_depth
+        ):
             target = self._primary_text if self._primary_depth else self._fallback_text
             target.append(data)
 
@@ -109,6 +122,16 @@ class _TextExtractor(HTMLParser):
                 return True
         return False
 
+    @classmethod
+    def _has_primary_marker(cls, attrs: list[tuple[str, str | None]]) -> bool:
+        for name, value in attrs:
+            if name.lower() not in {"class", "id", "role"} or value is None:
+                continue
+            tokens = {token.casefold() for token in value.replace("-", " ").split()}
+            if value.casefold() == "main" or tokens & cls._PRIMARY_TOKENS:
+                return True
+        return False
+
     @property
     def title(self) -> str:
         return " ".join("".join(self._title).split()) or "Untitled page"
@@ -116,7 +139,8 @@ class _TextExtractor(HTMLParser):
     @property
     def content(self) -> str:
         text = self._primary_text or self._fallback_text
-        return " ".join(" ".join(text).split())
+        normalized = " ".join(" ".join(text).split())
+        return re.sub(r"^(?:[|｜·•]\s*)+", "", normalized)
 
 
 class SafeHttpClient:
@@ -167,7 +191,9 @@ class SafeHttpClient:
                 "web page could not be read", "web_content_decode"
             ) from exc
         if not parser.content:
-            raise WebFetchError("web page has no readable text", "web_empty_content")
+            raise WebFetchError(
+                "web page has no primary readable content", "web_low_quality_content"
+            )
         return HtmlPage(title=parser.title, content=parser.content, url=final_url)
 
     @staticmethod

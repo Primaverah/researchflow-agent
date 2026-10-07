@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, ValidationError
 from researchflow.agent.models import AgentAction, AgentActionType
 from researchflow.agent.planner import RulePlanner
 from researchflow.agent.selector import StateSelector
-from researchflow.agent.summarizer import ExtractiveSummarizer
+from researchflow.agent.summarizer import ExtractiveSummarizer, SummaryGenerationStatus
 from researchflow.domain import AgentState, PlanStep, ResearchPlan
 from researchflow.llm import (
     BaseLLMProvider,
@@ -366,12 +366,15 @@ class LLMSummarizer(_LLMComponent):
         )
         self._fallback_summarizer = fallback
         self._allowed_domains = allowed_domains
+        self.last_generation_status = SummaryGenerationStatus(mode="extractive")
 
     def summarize(
         self,
         query: str,
         documents: list[ReadDocumentOutput],
         web_sources: list[WebSource] | None = None,
+        *,
+        answer_language: str = "",
     ) -> str:
         verified_web_sources = [
             source
@@ -395,9 +398,15 @@ class LLMSummarizer(_LLMComponent):
             for source in verified_web_sources
         )
         try:
+            language_instruction = {
+                "zh": "Write the summary in Simplified Chinese.",
+                "en": "Write the summary in English.",
+            }.get(answer_language, "Use the language requested by the question.")
             output = self._complete(
-                "Summarize only these successfully read sources as JSON. Cite only "
-                "their source values in source_paths: "
+                "Answer the user's question directly; do not merely summarize the "
+                "web pages. Use only the successfully read evidence below. "
+                f"User question: {query}\n{language_instruction} "
+                "Return JSON and cite only their source values in source_paths: "
                 + json.dumps(evidence, ensure_ascii=False),
                 LLMSummaryOutput,
                 {
@@ -409,9 +418,27 @@ class LLMSummarizer(_LLMComponent):
             allowed_paths = {item["source"] for item in evidence}
             if not set(output.source_paths).issubset(allowed_paths):
                 raise ValueError("LLM cited a source that was not read")
+            if answer_language == "zh" and not any(
+                "\u4e00" <= character <= "\u9fff" for character in output.summary
+            ):
+                raise ValueError(
+                    "LLM did not honor the requested Chinese answer language"
+                )
         except (LLMError, ValidationError, ValueError) as exc:
             self._fallback("summarizer", exc)
-            return self._fallback_summarizer.summarize(query, documents, web_sources)
+            report = self._fallback_summarizer.summarize(
+                query,
+                documents,
+                web_sources,
+                answer_language=answer_language,
+            )
+            assert self.last_decision is not None
+            self.last_generation_status = SummaryGenerationStatus(
+                mode="extractive_fallback",
+                fallback_reason=self.last_decision.fallback_reason,
+                error_type=self.last_decision.error_type,
+            )
+            return report
         assert self.last_decision is not None
         self.last_decision = LLMDecision(
             component="summarizer",
@@ -428,6 +455,7 @@ class LLMSummarizer(_LLMComponent):
         ]
         if not source_lines:
             source_lines = ["- 无"]
+        self.last_generation_status = SummaryGenerationStatus(mode="llm_grounded")
         return "\n".join(
             [
                 "# 研究报告",

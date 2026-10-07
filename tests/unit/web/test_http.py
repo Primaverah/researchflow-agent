@@ -119,6 +119,74 @@ def test_fetch_discards_version_and_theme_switcher_noise() -> None:
     assert page.content == "Python 3.13 adds supported free-threaded mode."
 
 
+def test_fetch_selects_class_marked_article_content_over_generic_link_navigation() -> (
+    None
+):
+    client = SafeHttpClient(
+        opener=lambda url, timeout: FakeResponse(
+            (
+                b"<html><title>Author profile</title><body>"
+                b'<div class="site-shell"><a>Home</a><a>Culture</a>'
+                b"<a>Travel</a><a>Finance</a><a>Login</a></div>"
+                b'<div class="article-content"><p>Haruki Murakami is a Japanese '
+                b"novelist whose work has been translated worldwide.</p></div>"
+                b"</body></html>"
+            ),
+            "text/html",
+            url,
+        ),
+        resolver=public_resolver,
+    )
+
+    page = client.fetch("https://example.com/profile")
+
+    assert page.content == (
+        "Haruki Murakami is a Japanese novelist whose work has been translated "
+        "worldwide."
+    )
+    assert "Home" not in page.content
+    assert "Finance" not in page.content
+
+
+def test_fetch_discards_standalone_layout_separators_from_primary_content() -> None:
+    client = SafeHttpClient(
+        opener=lambda url, timeout: FakeResponse(
+            (
+                b"<html><title>Profile</title><body>"
+                b'<div class="article-content">| | | | <p>Haruki Murakami is a '
+                b"Japanese novelist.</p></div></body></html>"
+            ),
+            "text/html",
+            url,
+        ),
+        resolver=public_resolver,
+    )
+
+    page = client.fetch("https://example.com/profile")
+
+    assert page.content == "Haruki Murakami is a Japanese novelist."
+
+
+def test_fetch_rejects_navigation_only_page_as_low_quality_content() -> None:
+    client = SafeHttpClient(
+        opener=lambda url, timeout: FakeResponse(
+            (
+                b"<html><title>Portal</title><body><div><a>Home</a><a>News</a>"
+                b"<a>Sports</a><a>Culture</a><a>Finance</a><a>Login</a></div>"
+                b"</body></html>"
+            ),
+            "text/html",
+            url,
+        ),
+        resolver=public_resolver,
+    )
+
+    with pytest.raises(WebFetchError) as error:
+        client.fetch("https://example.com/portal")
+
+    assert error.value.error_type == "web_low_quality_content"
+
+
 @pytest.mark.parametrize("url", ["file:///etc/passwd", "http://localhost/x"])
 def test_fetch_rejects_unsafe_urls(url: str) -> None:
     client = SafeHttpClient(opener=lambda *_: None, resolver=public_resolver)

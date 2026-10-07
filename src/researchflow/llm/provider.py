@@ -8,10 +8,25 @@ from typing import Protocol, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from researchflow.llm.config import LLMConfig
-from researchflow.llm.errors import LLMError, LLMStructuredOutputError
+from researchflow.llm.errors import (
+    LLMDependencyError,
+    LLMError,
+    LLMStructuredOutputError,
+)
 from researchflow.llm.models import LLMRequest, LLMResponse, TokenUsage
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def require_openai_dependency() -> None:
+    """Fail before a workflow starts when optional LLM support is unavailable."""
+    try:
+        import openai  # noqa: F401
+    except ImportError as exc:
+        raise LLMDependencyError(
+            "LLM support requires the optional openai dependency; "
+            "install it with `uv sync --frozen --extra llm`"
+        ) from exc
 
 
 class LLMProvider(Protocol):
@@ -136,8 +151,9 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 },
             )
         except ImportError as exc:
-            raise LLMError(
-                "LLM support requires the optional openai dependency"
+            raise LLMDependencyError(
+                "LLM support requires the optional openai dependency; "
+                "install it with `uv sync --frozen --extra llm`"
             ) from exc
         except Exception as exc:
             raise LLMError(

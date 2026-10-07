@@ -5,6 +5,7 @@ graph framework.  Nodes produce patches; the small engine owns routing and
 patch application so the nodes can later be adapted to a graph runtime.
 """
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from enum import StrEnum
@@ -14,7 +15,7 @@ from pydantic import Field
 
 from researchflow.agent.planner import RulePlanner
 from researchflow.agent.selector import StateSelector
-from researchflow.agent.summarizer import ExtractiveSummarizer
+from researchflow.agent.summarizer import ExtractiveSummarizer, SummaryGenerationStatus
 from researchflow.domain import (
     AgentState,
     AgentStatus,
@@ -49,6 +50,12 @@ class GraphEndReason(StrEnum):
     MAX_STEPS = "max_steps"
 
 
+class EvidenceStatus(StrEnum):
+    SUFFICIENT = "sufficient"
+    PARTIAL = "partial"
+    INSUFFICIENT = "insufficient"
+
+
 class GraphCandidate(DomainModel):
     """A normalized source candidate, ordered independently of task timing."""
 
@@ -63,12 +70,20 @@ class AgentGraphState(DomainModel):
 
     run_id: str
     query: str
+    answer_target: str = ""
+    answer_language: str = ""
     current_node: GraphNode = GraphNode.INITIALIZE
     agent: AgentState | None = None
     candidates: list[GraphCandidate] = Field(default_factory=list)
     documents: list[ReadDocumentOutput] = Field(default_factory=list)
     web_sources: list[WebSource] = Field(default_factory=list)
     rejected_sources: list[str] = Field(default_factory=list)
+    attempted_candidates: list[str] = Field(default_factory=list)
+    evidence_status: EvidenceStatus | None = None
+    evidence_gaps: list[str] = Field(default_factory=list)
+    generation_mode: str | None = None
+    generation_fallback_reason: str | None = None
+    generation_error_type: str | None = None
     replans: int = 0
     max_replans: int = 1
     replan_reason: str | None = None
@@ -114,9 +129,20 @@ class GraphAgentRunner:
         self._max_replans = max_replans
         self._call_count = 0
 
-    def run(self, query: str, context: ToolContext) -> AgentState:
+    def run(
+        self,
+        query: str,
+        context: ToolContext,
+        *,
+        answer_target: str | None = None,
+        answer_language: str = "",
+    ) -> AgentState:
         state = AgentGraphState(
-            run_id=context.run_id, query=query, max_replans=self._max_replans
+            run_id=context.run_id,
+            query=query,
+            answer_target=answer_target or query,
+            answer_language=answer_language,
+            max_replans=self._max_replans,
         )
         while True:
             if (
@@ -161,6 +187,10 @@ class GraphAgentRunner:
         if node is GraphNode.REPLAN:
             return GraphNode.RETRIEVE
         if node is GraphNode.READ_SOURCES:
+            if state.documents or state.web_sources:
+                return GraphNode.SYNTHESIZE
+            if len(state.attempted_candidates) < len(state.candidates):
+                return GraphNode.READ_SOURCES
             return GraphNode.SYNTHESIZE
         if node is GraphNode.SYNTHESIZE:
             return GraphNode.VERIFY
@@ -223,6 +253,13 @@ class GraphAgentRunner:
     def _assess_evidence(
         self, state: AgentGraphState, _: ToolContext
     ) -> dict[str, Any]:
+        if state.documents or state.web_sources or state.rejected_sources:
+            if state.documents or state.web_sources:
+                return {"evidence_status": EvidenceStatus.SUFFICIENT}
+            return {
+                "evidence_status": EvidenceStatus.INSUFFICIENT,
+                "evidence_gaps": ["no_successful_relevant_source"],
+            }
         if state.candidates:
             return {}
         if state.replans >= state.max_replans:
@@ -242,7 +279,13 @@ class GraphAgentRunner:
         self, state: AgentGraphState, context: ToolContext
     ) -> dict[str, Any]:
         calls = []
-        for candidate in state.candidates[: self._read_limit]:
+        attempted = set(state.attempted_candidates)
+        unread = [
+            candidate
+            for candidate in state.candidates
+            if candidate.locator not in attempted
+        ][: self._read_limit]
+        for candidate in unread:
             if candidate.source_type == "local":
                 calls.append(("read_document", {"path": candidate.locator}))
             else:
@@ -256,41 +299,115 @@ class GraphAgentRunner:
                         },
                     )
                 )
-        documents: list[ReadDocumentOutput] = []
-        web_sources: list[WebSource] = []
-        rejected: list[str] = []
+        documents = [*state.documents]
+        web_sources = [*state.web_sources]
+        rejected = [*state.rejected_sources]
         for call, result, trace in self._parallel_calls(state, context, calls):
             self._append_tool(self._agent(state), call, result, trace)
             if not result.success:
+                locator = call.arguments.get("path") or call.arguments.get("url")
+                reason = result.error_message or "unknown read failure"
+                rejected.append(f"{locator} — {reason}")
                 continue
             if call.tool_name == "read_document":
                 document = ReadDocumentOutput.model_validate(result.output)
-                if self._is_relevant(state.query, document.title, document.content):
+                rejection = self._evidence_rejection_reason(
+                    state.query, document.title, document.content
+                )
+                if rejection is None:
                     documents.append(document)
                 else:
-                    rejected.append(document.path)
+                    rejected.append(f"{document.path} — {rejection}")
             else:
                 source = WebSource.model_validate(result.output)
-                if self._is_relevant(state.query, source.title, source.content):
+                rejection = self._evidence_rejection_reason(
+                    state.query, source.title, source.content
+                )
+                if rejection is None:
                     web_sources.append(source)
                 else:
-                    rejected.append(source.url)
+                    rejected.append(f"{source.url} — {rejection}")
         return {
             "agent": self._agent(state),
             "documents": documents,
             "web_sources": web_sources,
             "rejected_sources": rejected,
+            "attempted_candidates": [
+                *state.attempted_candidates,
+                *(candidate.locator for candidate in unread),
+            ],
         }
 
     def _synthesize(
         self, state: AgentGraphState, context: ToolContext
     ) -> dict[str, Any]:
         agent = self._agent(state)
-        agent.final_answer = self._summarizer.summarize(
-            state.query, state.documents, state.web_sources
+        if not state.documents and not state.web_sources:
+            agent.final_answer = self._read_failure_report(state)
+            return {
+                "agent": agent,
+                "end_reason": GraphEndReason.NO_RESULTS,
+            }
+        answer = self._summarizer.summarize(
+            state.answer_target,
+            state.documents,
+            state.web_sources,
+            answer_language=state.answer_language,
+        )
+        generation = getattr(self._summarizer, "last_generation_status", None)
+        if not isinstance(generation, SummaryGenerationStatus):
+            generation = SummaryGenerationStatus(mode="extractive")
+        agent.final_answer = "\n".join(
+            [answer, "", "## 回答生成状态", "", generation.render()]
         )
         self._record_decision(agent, self._summarizer, context)
-        return {"agent": agent}
+        return {
+            "agent": agent,
+            "generation_mode": generation.mode,
+            "generation_fallback_reason": generation.fallback_reason,
+            "generation_error_type": generation.error_type,
+        }
+
+    @staticmethod
+    def _read_failure_report(state: AgentGraphState) -> str:
+        candidates = [
+            "- "
+            f"{candidate.title} — {candidate.locator}\n"
+            f"  搜索摘要（未读取正文）：{candidate.summary or '无'}"
+            for candidate in state.candidates
+        ] or ["- 无"]
+        failures = [f"- {item}" for item in state.rejected_sources] or ["- 无"]
+        search_failures = [
+            f"- {result.tool_name}: {result.error_message or 'unknown search failure'}"
+            for result in state.agent.tool_results
+            if not result.success
+            and result.tool_name in {"web_search", "search_documents"}
+        ] or ["- 无"]
+        return "\n".join(
+            [
+                "# 研究报告",
+                "",
+                "## 问题",
+                "",
+                state.query,
+                "",
+                "## 结果",
+                "",
+                "没有成功读取任何候选来源，因此无法提供经来源验证的事实性回答。",
+                "",
+                "## 搜索候选（未读取正文）",
+                "",
+                *candidates,
+                "",
+                "## 搜索失败原因",
+                "",
+                *search_failures,
+                "",
+                "## 正文读取失败原因",
+                "",
+                *failures,
+            ]
+        )
 
     def _verify(self, state: AgentGraphState, _: ToolContext) -> dict[str, Any]:
         # Inputs are constructed only from successful result validation above.
@@ -365,12 +482,63 @@ class GraphAgentRunner:
 
     @staticmethod
     def _is_relevant(query: str, title: str, content: str) -> bool:
+        return (
+            GraphAgentRunner._evidence_rejection_reason(query, title, content) is None
+        )
+
+    @staticmethod
+    def _evidence_rejection_reason(query: str, title: str, content: str) -> str | None:
         text = f"{title}\n{content}".casefold()
+        if "编译器" in query or "compiler" in query.casefold():
+            if any(
+                term in text for term in ("编译器", "compiler", "gcc", "clang", "msvc")
+            ):
+                return None
+            return "missing_compiler_evidence"
         if any(term in query for term in ("代表作", "代表电影", "作品有哪些")):
-            return any(term in text for term in ("电影", "作品", "主演", "代表作"))
+            if any(term in text for term in ("电影", "作品", "主演", "代表作")):
+                return None
+            return "missing_work_evidence"
         if any(term in query for term in ("出生日期", "年龄", "多大")):
-            return any(term in text for term in ("出生", "生于", "born"))
-        return True
+            if any(term in text for term in ("出生", "生于", "born")):
+                return None
+            return "missing_birth_evidence"
+        subject = GraphAgentRunner._person_subject(query)
+        if subject:
+            if subject.casefold() not in text:
+                return "missing_subject_coverage"
+            if not any(
+                term in text
+                for term in (
+                    "作家",
+                    "小说家",
+                    "演员",
+                    "科学家",
+                    "记者",
+                    "出生",
+                    "国籍",
+                    "代表作",
+                    "writer",
+                    "novelist",
+                    "actor",
+                    "scientist",
+                    "journalist",
+                    "born",
+                    "nationality",
+                    "known for",
+                )
+            ):
+                return "missing_person_identity_evidence"
+            if len(content.strip()) < 24:
+                return "insufficient_person_profile_content"
+        return None
+
+    @staticmethod
+    def _person_subject(query: str) -> str:
+        match = re.fullmatch(
+            r"\s*(.+?)(?:是谁|是誰|who\s+is)\s*[?？.!！]*\s*", query, re.I
+        )
+        return match.group(1).strip(" ，。？?!！") if match else ""
 
     @staticmethod
     def _local_candidates(output: Any) -> list[GraphCandidate]:
@@ -401,10 +569,7 @@ class GraphAgentRunner:
         unique: dict[tuple[str, str], GraphCandidate] = {}
         for candidate in candidates:
             unique.setdefault((candidate.source_type, candidate.locator), candidate)
-        return sorted(
-            unique.values(),
-            key=lambda item: (item.source_type, item.locator, item.title),
-        )[: self._candidate_limit]
+        return list(unique.values())[: self._candidate_limit]
 
     @staticmethod
     def _has_web_plan(state: AgentGraphState) -> bool:
@@ -461,6 +626,9 @@ class GraphAgentRunner:
                     "end_reason": None
                     if state.end_reason is None
                     else state.end_reason.value,
+                    "generation_mode": state.generation_mode,
+                    "generation_fallback_reason": state.generation_fallback_reason,
+                    "generation_error_type": state.generation_error_type,
                 },
                 context,
             )
