@@ -139,7 +139,8 @@ class _TextExtractor(HTMLParser):
     @property
     def content(self) -> str:
         text = self._primary_text or self._fallback_text
-        return " ".join(" ".join(text).split())
+        normalized = " ".join(" ".join(text).split())
+        return re.sub(r"^(?:[|｜·•]\s*)+", "", normalized)
 
 
 class SafeHttpClient:

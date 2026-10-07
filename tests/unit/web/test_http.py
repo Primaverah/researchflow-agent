@@ -148,6 +148,25 @@ def test_fetch_selects_class_marked_article_content_over_generic_link_navigation
     assert "Finance" not in page.content
 
 
+def test_fetch_discards_standalone_layout_separators_from_primary_content() -> None:
+    client = SafeHttpClient(
+        opener=lambda url, timeout: FakeResponse(
+            (
+                b"<html><title>Profile</title><body>"
+                b'<div class="article-content">| | | | <p>Haruki Murakami is a '
+                b"Japanese novelist.</p></div></body></html>"
+            ),
+            "text/html",
+            url,
+        ),
+        resolver=public_resolver,
+    )
+
+    page = client.fetch("https://example.com/profile")
+
+    assert page.content == "Haruki Murakami is a Japanese novelist."
+
+
 def test_fetch_rejects_navigation_only_page_as_low_quality_content() -> None:
     client = SafeHttpClient(
         opener=lambda url, timeout: FakeResponse(
