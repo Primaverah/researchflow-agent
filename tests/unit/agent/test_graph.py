@@ -4,6 +4,7 @@ from pathlib import Path
 
 from researchflow.agent import (
     AgentGraphState,
+    EvidenceStatus,
     ExtractiveSummarizer,
     GraphAgentRunner,
     GraphEndReason,
@@ -171,7 +172,7 @@ def test_graph_replans_once_then_finishes_without_results(tmp_path: Path) -> Non
 
     assert state.status is AgentStatus.COMPLETED
     assert calls == 2
-    assert "未找到相关文档" in state.final_answer
+    assert "没有成功读取任何候选来源" in state.final_answer
     assert any(
         event.get("replan_reason") == "insufficient_evidence"
         for event in executor.events
@@ -246,3 +247,148 @@ def test_web_retrieval_runs_local_and_web_and_merges_in_stable_order(
         "local.md" in state.final_answer
         and "https://example.com/a" in state.final_answer
     )
+
+
+def test_compiler_page_requires_compiler_evidence_not_only_subject() -> None:
+    assert (
+        GraphAgentRunner._is_relevant(
+            "C和C++都使用哪些常见编译器", "C和C++", "C和C++是编程语言。"
+        )
+        is False
+    )
+    assert (
+        GraphAgentRunner._is_relevant(
+            "C和C++都使用哪些常见编译器",
+            "C/C++ compilers",
+            "GCC、Clang 和 MSVC 都支持 C++。",
+        )
+        is True
+    )
+
+
+def test_candidate_deduplication_keeps_provider_order_and_limit(tmp_path: Path) -> None:
+    runner = GraphAgentRunner(
+        RulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        FakeExecutor(lambda _: None),
+        candidate_limit=2,
+    )
+    candidates = [
+        runner._web_candidates(
+            {
+                "results": [
+                    {"url": "https://example.com/z", "title": "Z"},
+                    {"url": "https://example.com/a", "title": "A"},
+                    {"url": "https://example.com/z", "title": "Duplicate"},
+                ]
+            }
+        )
+    ][0]
+
+    assert [item.locator for item in runner._deduplicate(candidates)] == [
+        "https://example.com/z",
+        "https://example.com/a",
+    ]
+
+
+def test_no_successful_relevant_read_is_insufficient_evidence(tmp_path: Path) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(
+                call, output={"hits": [{"path": "empty.md", "title": "Empty"}]}
+            )
+        if call.tool_name == "read_document":
+            return make_result(call, success=False)
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    runner = GraphAgentRunner(
+        RulePlanner(), StateSelector(), ExtractiveSummarizer(), FakeExecutor(handler)
+    )
+    graph_state = AgentGraphState(run_id="graph", query="evidence", max_replans=0)
+    initialized = runner._initialize(graph_state, make_context(tmp_path))
+    graph_state = graph_state.model_copy(update=initialized)
+    retrieved = runner._retrieve(graph_state, make_context(tmp_path))
+    graph_state = graph_state.model_copy(update=retrieved)
+    read = runner._read_sources(graph_state, make_context(tmp_path))
+    graph_state = graph_state.model_copy(update=read)
+
+    assessment = runner._assess_evidence(graph_state, make_context(tmp_path))
+    assert assessment["evidence_status"] is EvidenceStatus.INSUFFICIENT
+
+
+def test_all_web_reads_failed_returns_candidate_links_and_failure_reasons(
+    tmp_path: Path,
+) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return make_result(
+                call,
+                output={
+                    "results": [
+                        {
+                            "url": "https://example.com/jackie",
+                            "title": "Jackie Chan profile",
+                            "summary": "Search snippet only",
+                        }
+                    ]
+                },
+            )
+        if call.tool_name == "fetch_url":
+            return make_result(call, success=False)
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    state = GraphAgentRunner(
+        WebRulePlanner(), StateSelector(), ExtractiveSummarizer(), FakeExecutor(handler)
+    ).run("成龙是谁", make_context(tmp_path))
+
+    assert "没有成功读取任何候选来源" in state.final_answer
+    assert "https://example.com/jackie" in state.final_answer
+    assert "expected failure" in state.final_answer
+
+
+def test_read_failure_tries_remaining_candidates_before_reporting_no_results(
+    tmp_path: Path,
+) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return make_result(
+                call,
+                output={
+                    "results": [
+                        {"url": f"https://example.com/{index}", "title": str(index)}
+                        for index in range(6)
+                    ]
+                },
+            )
+        if call.tool_name == "fetch_url" and call.arguments["url"].endswith("/5"):
+            return make_result(
+                call,
+                output={
+                    "url": call.arguments["url"],
+                    "title": "Relevant source",
+                    "summary": "",
+                    "accessed_at": "2026-09-30T00:00:00Z",
+                    "content": "成龙是演员。",
+                },
+            )
+        if call.tool_name == "fetch_url":
+            return make_result(call, success=False)
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    executor = FakeExecutor(handler)
+    state = GraphAgentRunner(
+        WebRulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        executor,
+        read_limit=5,
+        max_steps=12,
+    ).run("成龙是谁", make_context(tmp_path))
+
+    assert any(call.arguments.get("url", "").endswith("/5") for call in executor.calls)
+    assert "https://example.com/5" in state.final_answer

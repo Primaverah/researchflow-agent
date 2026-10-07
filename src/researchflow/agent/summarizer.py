@@ -26,6 +26,8 @@ class ExtractiveSummarizer:
         query: str,
         documents: list[ReadDocumentOutput],
         web_sources: list[WebSource] | None = None,
+        *,
+        answer_language: str = "",
     ) -> str:
         """Return a stable report with source-supported thematic conclusions."""
         evidence: list[tuple[str, int]] = []

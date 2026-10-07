@@ -57,9 +57,7 @@ class WebSearchTool(BaseTool):
                 parsed.query, parsed.limit, self._allowed_domains
             )
         except WebSearchError as exc:
-            raise ToolFailure(
-                str(exc), error_type="web_search_failed"
-            ) from exc
+            raise ToolFailure(str(exc), error_type="web_search_failed") from exc
         results = [
             item
             for item in results
@@ -73,9 +71,7 @@ class WebSearchTool(BaseTool):
                     simpler_query, parsed.limit, self._allowed_domains
                 )
             except WebSearchError as exc:
-                raise ToolFailure(
-                    str(exc), error_type="web_search_failed"
-                ) from exc
+                raise ToolFailure(str(exc), error_type="web_search_failed") from exc
             results = [
                 item
                 for item in results

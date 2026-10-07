@@ -1,6 +1,7 @@
 """Command-line interface for ResearchFlow Agent."""
 
 import json
+import sys
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -20,6 +21,7 @@ from researchflow.agent import (
     LLMSummarizer,
     RulePlanner,
     SessionCatalog,
+    SessionResearchRequest,
     StateSelector,
     WebRulePlanner,
     WebStateSelector,
@@ -53,6 +55,12 @@ app.add_typer(sessions_app, name="sessions")
 
 class LLMCheckOutput(BaseModel):
     status: str
+
+
+def terminal_safe_text(text: str, *, encoding: str | None = None) -> str:
+    """Return terminal-safe text without changing UTF-8 artifacts on disk."""
+    target = encoding or sys.stdout.encoding or "utf-8"
+    return text.encode(target, errors="replace").decode(target)
 
 
 def _create_llm_provider(
@@ -197,9 +205,9 @@ def _session_runner(
     allowed_domains: tuple[str, ...],
     llm_overrides: dict[str, object] | None,
 ) -> LangGraphSessionRunner:
-    def research(query: str) -> str:
+    def research(request: SessionResearchRequest) -> str:
         state, _ = _run_workflow(
-            query,
+            request.standalone_query,
             documents_dir,
             output_dir,
             10,
@@ -208,10 +216,22 @@ def _session_runner(
             allowed_domains,
             llm_overrides,
             "graph",
+            answer_target=request.answer_target,
+            answer_language=request.answer_language,
         )
         return state.final_answer or "未找到相关文档。"
 
-    return LangGraphSessionRunner(_session_database(output_dir), research)
+    return LangGraphSessionRunner(
+        _session_database(output_dir),
+        research=lambda query: research(
+            SessionResearchRequest(
+                current_input=query,
+                standalone_query=query,
+                answer_target=query,
+            )
+        ),
+        research_with_context=research,
+    )
 
 
 def _run_workflow(
@@ -224,6 +244,9 @@ def _run_workflow(
     allowed_domains: tuple[str, ...] = (),
     llm_overrides: dict[str, object] | None = None,
     orchestrator: str = "loop",
+    *,
+    answer_target: str | None = None,
+    answer_language: str = "",
 ) -> tuple[AgentState, ToolContext]:
     context = _create_context(documents_dir, output_dir)
     registry = ToolRegistry()
@@ -288,6 +311,17 @@ def _run_workflow(
         runner = AgentRunner(
             planner, selector, summarizer, executor, max_steps=max_steps
         )
+    if orchestrator == "graph":
+        assert isinstance(runner, GraphAgentRunner)
+        return (
+            runner.run(
+                query,
+                context,
+                answer_target=answer_target,
+                answer_language=answer_language,
+            ),
+            context,
+        )
     return runner.run(query, context), context
 
 
@@ -321,7 +355,7 @@ def _render_state(state: AgentState, context: ToolContext, *, verbose: bool) -> 
             typer.echo(f"[FAILED] {result.tool_name}: {message}")
 
     typer.echo("\n最终摘要")
-    typer.echo(state.final_answer or "研究流程未生成摘要。")
+    typer.echo(terminal_safe_text(state.final_answer or "研究流程未生成摘要。"))
 
     save_result = _latest_result(state, "save_note")
     typer.echo("\n输出文件")
@@ -586,7 +620,7 @@ def chat(
                 resolved_session, typer.prompt(result.prompt or "澄清")
             )
         typer.echo(f"session_id: {resolved_session}")
-        typer.echo(result.response)
+        typer.echo(terminal_safe_text(result.response))
     except WebSearchConfigurationError as exc:
         _input_error(str(exc))
     finally:

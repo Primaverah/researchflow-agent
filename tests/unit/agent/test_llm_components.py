@@ -395,6 +395,71 @@ def test_llm_summarizer_can_cite_allowed_fetched_web_evidence() -> None:
     assert "example.com" not in report
 
 
+def test_llm_summarizer_receives_question_and_explicit_answer_language() -> None:
+    provider = FakeProvider(
+        [
+            {
+                "summary": "RAG 通过检索外部证据辅助生成。",
+                "source_paths": ["paper.md"],
+            }
+        ]
+    )
+    summarizer = LLMSummarizer(
+        provider,
+        ExtractiveSummarizer(),
+        model_name="fake-model",
+    )
+
+    summarizer.summarize(
+        "什么是RAG？帮我查找3篇相关论文",
+        [
+            ReadDocumentOutput(
+                path="paper.md",
+                title="RAG paper",
+                content="Retrieval augmented generation evidence.",
+                char_count=39,
+            )
+        ],
+        answer_language="zh",
+    )
+
+    prompt = provider.requests[-1].user_prompt
+    assert "什么是RAG？帮我查找3篇相关论文" in prompt
+    assert "Simplified Chinese" in prompt
+    assert "do not merely summarize" in prompt
+
+
+def test_llm_summarizer_rejects_english_when_chinese_is_required() -> None:
+    summarizer = LLMSummarizer(
+        FakeProvider(
+            [
+                {
+                    "summary": "RAG uses retrieval before generation.",
+                    "source_paths": ["paper.md"],
+                }
+            ]
+        ),
+        ExtractiveSummarizer(),
+        model_name="fake-model",
+    )
+
+    summarizer.summarize(
+        "什么是RAG",
+        [
+            ReadDocumentOutput(
+                path="paper.md",
+                title="RAG paper",
+                content="中文证据：RAG 先检索再生成。",
+                char_count=17,
+            )
+        ],
+        answer_language="zh",
+    )
+
+    assert summarizer.last_decision is not None
+    assert summarizer.last_decision.fallback is True
+
+
 def test_llm_fallback_records_safe_reason_without_raw_provider_message() -> None:
     class FailingProvider(BaseLLMProvider):
         def complete(self, request: LLMRequest) -> LLMResponse:

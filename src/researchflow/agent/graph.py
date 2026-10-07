@@ -49,6 +49,12 @@ class GraphEndReason(StrEnum):
     MAX_STEPS = "max_steps"
 
 
+class EvidenceStatus(StrEnum):
+    SUFFICIENT = "sufficient"
+    PARTIAL = "partial"
+    INSUFFICIENT = "insufficient"
+
+
 class GraphCandidate(DomainModel):
     """A normalized source candidate, ordered independently of task timing."""
 
@@ -63,12 +69,17 @@ class AgentGraphState(DomainModel):
 
     run_id: str
     query: str
+    answer_target: str = ""
+    answer_language: str = ""
     current_node: GraphNode = GraphNode.INITIALIZE
     agent: AgentState | None = None
     candidates: list[GraphCandidate] = Field(default_factory=list)
     documents: list[ReadDocumentOutput] = Field(default_factory=list)
     web_sources: list[WebSource] = Field(default_factory=list)
     rejected_sources: list[str] = Field(default_factory=list)
+    attempted_candidates: list[str] = Field(default_factory=list)
+    evidence_status: EvidenceStatus | None = None
+    evidence_gaps: list[str] = Field(default_factory=list)
     replans: int = 0
     max_replans: int = 1
     replan_reason: str | None = None
@@ -114,9 +125,20 @@ class GraphAgentRunner:
         self._max_replans = max_replans
         self._call_count = 0
 
-    def run(self, query: str, context: ToolContext) -> AgentState:
+    def run(
+        self,
+        query: str,
+        context: ToolContext,
+        *,
+        answer_target: str | None = None,
+        answer_language: str = "",
+    ) -> AgentState:
         state = AgentGraphState(
-            run_id=context.run_id, query=query, max_replans=self._max_replans
+            run_id=context.run_id,
+            query=query,
+            answer_target=answer_target or query,
+            answer_language=answer_language,
+            max_replans=self._max_replans,
         )
         while True:
             if (
@@ -161,6 +183,10 @@ class GraphAgentRunner:
         if node is GraphNode.REPLAN:
             return GraphNode.RETRIEVE
         if node is GraphNode.READ_SOURCES:
+            if state.documents or state.web_sources:
+                return GraphNode.SYNTHESIZE
+            if len(state.attempted_candidates) < len(state.candidates):
+                return GraphNode.READ_SOURCES
             return GraphNode.SYNTHESIZE
         if node is GraphNode.SYNTHESIZE:
             return GraphNode.VERIFY
@@ -223,6 +249,13 @@ class GraphAgentRunner:
     def _assess_evidence(
         self, state: AgentGraphState, _: ToolContext
     ) -> dict[str, Any]:
+        if state.documents or state.web_sources or state.rejected_sources:
+            if state.documents or state.web_sources:
+                return {"evidence_status": EvidenceStatus.SUFFICIENT}
+            return {
+                "evidence_status": EvidenceStatus.INSUFFICIENT,
+                "evidence_gaps": ["no_successful_relevant_source"],
+            }
         if state.candidates:
             return {}
         if state.replans >= state.max_replans:
@@ -242,7 +275,13 @@ class GraphAgentRunner:
         self, state: AgentGraphState, context: ToolContext
     ) -> dict[str, Any]:
         calls = []
-        for candidate in state.candidates[: self._read_limit]:
+        attempted = set(state.attempted_candidates)
+        unread = [
+            candidate
+            for candidate in state.candidates
+            if candidate.locator not in attempted
+        ][: self._read_limit]
+        for candidate in unread:
             if candidate.source_type == "local":
                 calls.append(("read_document", {"path": candidate.locator}))
             else:
@@ -256,12 +295,15 @@ class GraphAgentRunner:
                         },
                     )
                 )
-        documents: list[ReadDocumentOutput] = []
-        web_sources: list[WebSource] = []
-        rejected: list[str] = []
+        documents = [*state.documents]
+        web_sources = [*state.web_sources]
+        rejected = [*state.rejected_sources]
         for call, result, trace in self._parallel_calls(state, context, calls):
             self._append_tool(self._agent(state), call, result, trace)
             if not result.success:
+                locator = call.arguments.get("path") or call.arguments.get("url")
+                reason = result.error_message or "unknown read failure"
+                rejected.append(f"{locator} — {reason}")
                 continue
             if call.tool_name == "read_document":
                 document = ReadDocumentOutput.model_validate(result.output)
@@ -280,17 +322,71 @@ class GraphAgentRunner:
             "documents": documents,
             "web_sources": web_sources,
             "rejected_sources": rejected,
+            "attempted_candidates": [
+                *state.attempted_candidates,
+                *(candidate.locator for candidate in unread),
+            ],
         }
 
     def _synthesize(
         self, state: AgentGraphState, context: ToolContext
     ) -> dict[str, Any]:
         agent = self._agent(state)
+        if not state.documents and not state.web_sources:
+            agent.final_answer = self._read_failure_report(state)
+            return {
+                "agent": agent,
+                "end_reason": GraphEndReason.NO_RESULTS,
+            }
         agent.final_answer = self._summarizer.summarize(
-            state.query, state.documents, state.web_sources
+            state.answer_target,
+            state.documents,
+            state.web_sources,
+            answer_language=state.answer_language,
         )
         self._record_decision(agent, self._summarizer, context)
         return {"agent": agent}
+
+    @staticmethod
+    def _read_failure_report(state: AgentGraphState) -> str:
+        candidates = [
+            "- "
+            f"{candidate.title} — {candidate.locator}\n"
+            f"  搜索摘要（未读取正文）：{candidate.summary or '无'}"
+            for candidate in state.candidates
+        ] or ["- 无"]
+        failures = [f"- {item}" for item in state.rejected_sources] or ["- 无"]
+        search_failures = [
+            f"- {result.tool_name}: {result.error_message or 'unknown search failure'}"
+            for result in state.agent.tool_results
+            if not result.success
+            and result.tool_name in {"web_search", "search_documents"}
+        ] or ["- 无"]
+        return "\n".join(
+            [
+                "# 研究报告",
+                "",
+                "## 问题",
+                "",
+                state.query,
+                "",
+                "## 结果",
+                "",
+                "没有成功读取任何候选来源，因此无法提供经来源验证的事实性回答。",
+                "",
+                "## 搜索候选（未读取正文）",
+                "",
+                *candidates,
+                "",
+                "## 搜索失败原因",
+                "",
+                *search_failures,
+                "",
+                "## 正文读取失败原因",
+                "",
+                *failures,
+            ]
+        )
 
     def _verify(self, state: AgentGraphState, _: ToolContext) -> dict[str, Any]:
         # Inputs are constructed only from successful result validation above.
@@ -366,6 +462,10 @@ class GraphAgentRunner:
     @staticmethod
     def _is_relevant(query: str, title: str, content: str) -> bool:
         text = f"{title}\n{content}".casefold()
+        if "编译器" in query or "compiler" in query.casefold():
+            return any(
+                term in text for term in ("编译器", "compiler", "gcc", "clang", "msvc")
+            )
         if any(term in query for term in ("代表作", "代表电影", "作品有哪些")):
             return any(term in text for term in ("电影", "作品", "主演", "代表作"))
         if any(term in query for term in ("出生日期", "年龄", "多大")):
@@ -401,10 +501,7 @@ class GraphAgentRunner:
         unique: dict[tuple[str, str], GraphCandidate] = {}
         for candidate in candidates:
             unique.setdefault((candidate.source_type, candidate.locator), candidate)
-        return sorted(
-            unique.values(),
-            key=lambda item: (item.source_type, item.locator, item.title),
-        )[: self._candidate_limit]
+        return list(unique.values())[: self._candidate_limit]
 
     @staticmethod
     def _has_web_plan(state: AgentGraphState) -> bool:

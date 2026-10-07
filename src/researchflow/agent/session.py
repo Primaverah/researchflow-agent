@@ -1,5 +1,6 @@
 """Persisted LangGraph chat sessions with a deliberately small state schema."""
 
+import re
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -39,6 +40,8 @@ class SessionGraphState(DomainModel):
     resolved_subject: str = ""
     intent: str = ""
     standalone_query: str = ""
+    answer_target: str = ""
+    answer_language: str = ""
     required_facets: list[str] = Field(default_factory=list)
     rewritten_query: str = ""
     prior_query: str = ""
@@ -106,6 +109,19 @@ class ChatResult(DomainModel):
     prompt: str | None = None
 
 
+class SessionResearchRequest(DomainModel):
+    """The persisted turn context made available to the research workflow."""
+
+    current_input: str
+    standalone_query: str
+    answer_target: str
+    answer_language: str = ""
+    conversation_history: list[SessionMessage] = Field(default_factory=list)
+    resolved_subject: str = ""
+    intent: str = ""
+    required_facets: list[str] = Field(default_factory=list)
+
+
 class SessionStateData(TypedDict, total=False):
     session_id: str
     messages: Annotated[list[dict[str, str]], _append_messages]
@@ -114,6 +130,8 @@ class SessionStateData(TypedDict, total=False):
     resolved_subject: str
     intent: str
     standalone_query: str
+    answer_target: str
+    answer_language: str
     required_facets: list[str]
     rewritten_query: str
     prior_query: str
@@ -125,10 +143,18 @@ class SessionStateData(TypedDict, total=False):
 class LangGraphSessionRunner:
     """A checkpointed chat graph whose only mutable data is JSON-safe state."""
 
-    def __init__(self, database: Path, research: Callable[[str], str | None]) -> None:
+    def __init__(
+        self,
+        database: Path,
+        research: Callable[[str], str | None],
+        *,
+        research_with_context: Callable[[SessionResearchRequest], str | None]
+        | None = None,
+    ) -> None:
         self._database = database
         self._catalog = SessionCatalog(database)
         self._research = research
+        self._research_with_context = research_with_context
         self._connection = sqlite3.connect(database, check_same_thread=False)
         self._checkpointer = SqliteSaver(
             self._connection, serde=JsonPlusSerializer(pickle_fallback=False)
@@ -187,19 +213,32 @@ class LangGraphSessionRunner:
         latest = state.get("current_input", "").strip()
         subject = state.get("resolved_subject", "").strip()
         intent = LangGraphSessionRunner._intent(latest)
+        requested_language = LangGraphSessionRunner._requested_answer_language(latest)
+        language_only = requested_language is not None and (
+            LangGraphSessionRunner._is_language_only_request(latest)
+        )
+        prior_target = (
+            state.get("answer_target", "").strip()
+            or state.get("standalone_query", "").strip()
+            or state.get("prior_query", "").strip()
+        )
         if not subject:
             subject = LangGraphSessionRunner._explicit_subject(
                 state.get("prior_query", "").strip()
             )
         explicit_subject = (
             ""
-            if intent == "continuation" or LangGraphSessionRunner._has_reference(latest)
+            if language_only
+            or intent == "continuation"
+            or LangGraphSessionRunner._has_reference(latest)
             else LangGraphSessionRunner._explicit_subject(latest)
         )
         if explicit_subject:
             subject = explicit_subject
 
-        if LangGraphSessionRunner._has_reference(latest) and subject:
+        if language_only and prior_target:
+            standalone = prior_target
+        elif LangGraphSessionRunner._has_reference(latest) and subject:
             standalone = LangGraphSessionRunner._replace_reference(latest, subject)
         else:
             standalone = latest
@@ -221,10 +260,19 @@ class LangGraphSessionRunner:
             facets = []
         else:
             facets = []
+        answer_language = (
+            requested_language
+            or state.get("answer_language", "").strip()
+            or LangGraphSessionRunner._language_of(latest)
+        )
         return {
             "resolved_subject": subject,
             "intent": intent,
             "standalone_query": standalone,
+            "answer_target": (
+                prior_target if language_only and prior_target else standalone
+            ),
+            "answer_language": answer_language,
             "rewritten_query": standalone,
             "required_facets": facets,
             "turn_count": state.get("turn_count", 0) + 1,
@@ -233,6 +281,13 @@ class LangGraphSessionRunner:
 
     @staticmethod
     def _explicit_subject(query: str) -> str:
+        definition = re.search(
+            r"(?:什么是|what\s+is)\s*([A-Za-z][A-Za-z0-9+.#_-]*)",
+            query,
+            flags=re.IGNORECASE,
+        )
+        if definition:
+            return definition.group(1)
         for suffix in ("有什么区别", "是谁", "是个什么游戏", "是什么游戏"):
             if query.endswith(suffix):
                 return query.removesuffix(suffix).strip(" ，。？?")
@@ -241,6 +296,35 @@ class LangGraphSessionRunner:
         ):
             return query
         return ""
+
+    @staticmethod
+    def _requested_answer_language(query: str) -> str | None:
+        normalized = query.casefold().replace(" ", "")
+        if any(token in normalized for token in ("中文回答", "汉语回答", "简体中文")):
+            return "zh"
+        if any(token in normalized for token in ("english", "英文回答", "英语回答")):
+            return "en"
+        return None
+
+    @staticmethod
+    def _is_language_only_request(query: str) -> bool:
+        normalized = re.sub(r"[，。！？?！\s]", "", query.casefold())
+        return normalized in {
+            "用中文回答",
+            "请用中文回答",
+            "中文回答",
+            "请用简体中文回答",
+            "answerinchinese",
+            "pleaseanswerinchinese",
+            "answerinenglish",
+            "pleaseanswerinenglish",
+            "用英文回答",
+            "请用英文回答",
+        }
+
+    @staticmethod
+    def _language_of(query: str) -> str:
+        return "zh" if any("\u4e00" <= char <= "\u9fff" for char in query) else ""
 
     @staticmethod
     def _intent(query: str) -> str:
@@ -307,14 +391,29 @@ class LangGraphSessionRunner:
         }
 
     def _research_node(self, state: dict[str, Any]) -> dict[str, Any]:
-        answer = self._research(state["standalone_query"])
+        if self._research_with_context is None:
+            answer = self._research(state["standalone_query"])
+        else:
+            answer = self._research_with_context(
+                SessionResearchRequest(
+                    current_input=state.get("current_input", ""),
+                    standalone_query=state["standalone_query"],
+                    answer_target=state.get("answer_target", state["standalone_query"]),
+                    answer_language=state.get("answer_language", ""),
+                    conversation_history=[
+                        SessionMessage.model_validate(item)
+                        for item in state.get("messages", [])
+                    ],
+                    resolved_subject=state.get("resolved_subject", ""),
+                    intent=state.get("intent", ""),
+                    required_facets=state.get("required_facets", []),
+                )
+            )
         return {"response": answer or "未找到相关文档。"}
 
     @staticmethod
     def _respond(state: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "messages": [{"role": "assistant", "content": state["response"]}]
-        }
+        return {"messages": [{"role": "assistant", "content": state["response"]}]}
 
     @staticmethod
     def _compact_history(state: dict[str, Any]) -> dict[str, Any]:

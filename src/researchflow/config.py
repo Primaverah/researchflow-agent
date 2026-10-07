@@ -30,7 +30,14 @@ def load_local_secrets(directory: Path | None = None) -> None:
             "RESEARCHFLOW_LLM_API_KEY",
             "RESEARCHFLOW_SEARCH_API_KEY",
         }:
-            os.environ.setdefault(key, value.strip())
+            os.environ.setdefault(key, _unquote_secret(value.strip()))
+
+
+def _unquote_secret(value: str) -> str:
+    """Accept conventional matching .env quote delimiters without altering keys."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 
 def value(config: dict[str, Any], section: str, name: str, default: Any) -> Any:
