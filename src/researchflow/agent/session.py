@@ -4,7 +4,7 @@ import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -13,6 +13,15 @@ from langgraph.types import Command, interrupt
 from pydantic import Field
 
 from researchflow.domain.models import DomainModel
+
+
+def _append_messages(
+    existing: list[dict[str, str]], updates: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    """Append turn deltas; only the compactor may explicitly replace history."""
+    if updates and updates[0].get("__replace__") == "true":
+        return updates[1:]
+    return [*existing, *updates]
 
 
 class SessionMessage(DomainModel):
@@ -27,10 +36,14 @@ class SessionGraphState(DomainModel):
     messages: list[SessionMessage] = Field(default_factory=list)
     summary: str = ""
     current_input: str = ""
+    resolved_subject: str = ""
+    intent: str = ""
     standalone_query: str = ""
     required_facets: list[str] = Field(default_factory=list)
     rewritten_query: str = ""
     prior_query: str = ""
+    turn_count: int = 0
+    interrupt_status: str = ""
     response: str = ""
 
 
@@ -95,13 +108,17 @@ class ChatResult(DomainModel):
 
 class SessionStateData(TypedDict, total=False):
     session_id: str
-    messages: list[dict[str, str]]
+    messages: Annotated[list[dict[str, str]], _append_messages]
     summary: str
     current_input: str
+    resolved_subject: str
+    intent: str
     standalone_query: str
     required_facets: list[str]
     rewritten_query: str
     prior_query: str
+    turn_count: int
+    interrupt_status: str
     response: str
 
 
@@ -120,20 +137,10 @@ class LangGraphSessionRunner:
 
     def chat(self, message: str, *, session_id: str) -> ChatResult:
         self._catalog.touch(session_id)
-        prior_state = self.get_state(session_id)
-        previous = prior_state.get("messages", [])
-        prior_query = next(
-            (item["content"] for item in reversed(previous) if item["role"] == "user"),
-            "",
-        )
         result = self._graph.invoke(
             {
                 "session_id": session_id,
-                "messages": [
-                    *previous,
-                    {"role": "user", "content": message},
-                ],
-                "prior_query": prior_query,
+                "messages": [{"role": "user", "content": message}],
                 "current_input": message,
             },
             config={"configurable": {"thread_id": session_id}},
@@ -177,61 +184,126 @@ class LangGraphSessionRunner:
 
     @staticmethod
     def _contextualize(state: dict[str, Any]) -> dict[str, Any]:
-        messages = state.get("messages", [])
         latest = state.get("current_input", "").strip()
-        summary = state.get("summary", "")
-        previous = state.get("prior_query") or next(
-            (
-                item["content"]
-                for item in reversed(messages[:-1])
-                if item["role"] == "user"
-            ),
-            "",
-        )
-        subject = previous.removesuffix("是谁").strip()
-        if "代表作" in latest and previous:
-            standalone = f"{subject}的代表电影作品有哪些"
-            facets = ["representative_works"]
-        elif "多大" in latest or "年龄" in latest:
-            standalone = f"{subject}的出生日期及截至当前日期的年龄".strip()
-            facets = ["birth_date", "age"]
-        elif subject and any(pronoun in latest for pronoun in ("他", "她", "它")):
-            standalone = (
-                latest.replace("他的", f"{subject}的")
-                .replace("她的", f"{subject}的")
-                .replace("它的", f"{subject}的")
-                .replace("他", subject)
-                .replace("她", subject)
-                .replace("它", subject)
+        subject = state.get("resolved_subject", "").strip()
+        intent = LangGraphSessionRunner._intent(latest)
+        if not subject:
+            subject = LangGraphSessionRunner._explicit_subject(
+                state.get("prior_query", "").strip()
             )
-            facets = []
-        elif latest.casefold() in {"more", "continue", "继续", "更多"}:
-            if summary:
-                standalone = f"{summary}\n\nFollow up: {latest}"
-            else:
-                standalone = f"{previous}\n\nFollow up: {latest}".strip()
-            facets = []
+        explicit_subject = (
+            ""
+            if intent == "continuation" or LangGraphSessionRunner._has_reference(latest)
+            else LangGraphSessionRunner._explicit_subject(latest)
+        )
+        if explicit_subject:
+            subject = explicit_subject
+
+        if LangGraphSessionRunner._has_reference(latest) and subject:
+            standalone = LangGraphSessionRunner._replace_reference(latest, subject)
         else:
             standalone = latest
+
+        if intent == "compiler" and subject:
+            standalone = f"{subject}都使用哪些常见编译器"
+            facets = ["common_compilers"]
+        elif intent == "representative_works" and subject:
+            standalone = f"{subject}的代表电影作品有哪些"
+            facets = ["representative_works"]
+        elif intent == "age" and subject:
+            standalone = f"{subject}的出生日期及截至当前日期的年龄".strip()
+            facets = ["birth_date", "age"]
+        elif intent == "latest_update" and subject:
+            standalone = f"{subject}最近什么时候更新"
+            facets = ["latest_update"]
+        elif intent == "continuation" and subject:
+            standalone = f"{subject}更多信息"
+            facets = []
+        else:
             facets = []
         return {
+            "resolved_subject": subject,
+            "intent": intent,
             "standalone_query": standalone,
             "rewritten_query": standalone,
             "required_facets": facets,
+            "turn_count": state.get("turn_count", 0) + 1,
+            "interrupt_status": "awaiting_clarification" if not standalone else "",
         }
+
+    @staticmethod
+    def _explicit_subject(query: str) -> str:
+        for suffix in ("有什么区别", "是谁", "是个什么游戏", "是什么游戏"):
+            if query.endswith(suffix):
+                return query.removesuffix(suffix).strip(" ，。？?")
+        if query and not any(
+            token in query for token in ("什么", "哪些", "怎么", "吗", "？", "?")
+        ):
+            return query
+        return ""
+
+    @staticmethod
+    def _intent(query: str) -> str:
+        if "编译器" in query:
+            return "compiler"
+        if "代表作" in query:
+            return "representative_works"
+        if "多大" in query or "年龄" in query:
+            return "age"
+        if "更新" in query:
+            return "latest_update"
+        if "区别" in query:
+            return "comparison"
+        if query.casefold() in {"more", "continue", "继续", "更多"}:
+            return "continuation"
+        return "overview"
+
+    @staticmethod
+    def _has_reference(query: str) -> bool:
+        return any(
+            token in query
+            for token in (
+                "它们",
+                "他们",
+                "她们",
+                "两者",
+                "该项目",
+                "这个游戏",
+                "它",
+                "他",
+                "她",
+            )
+        )
+
+    @staticmethod
+    def _replace_reference(query: str, subject: str) -> str:
+        for token in (
+            "它们",
+            "他们",
+            "她们",
+            "两者",
+            "该项目",
+            "这个游戏",
+            "它",
+            "他",
+            "她",
+        ):
+            if token in query:
+                return query.replace(token, subject)
+        return query
 
     @staticmethod
     def _clarify(state: dict[str, Any]) -> dict[str, Any]:
         if state.get("rewritten_query", "").strip():
             return {}
         answer = interrupt("请提供需要研究的具体问题。")
-        messages = [*state.get("messages", []), {"role": "user", "content": answer}]
         query = answer.strip()
         return {
-            "messages": messages,
+            "messages": [{"role": "user", "content": answer}],
             "current_input": query,
             "standalone_query": query,
             "rewritten_query": query,
+            "interrupt_status": "resumed",
         }
 
     def _research_node(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -241,10 +313,7 @@ class LangGraphSessionRunner:
     @staticmethod
     def _respond(state: dict[str, Any]) -> dict[str, Any]:
         return {
-            "messages": [
-                *state.get("messages", []),
-                {"role": "assistant", "content": state["response"]},
-            ]
+            "messages": [{"role": "assistant", "content": state["response"]}]
         }
 
     @staticmethod
@@ -256,7 +325,10 @@ class LangGraphSessionRunner:
         summary = "\n".join(f"{item['role']}: {item['content']}" for item in older)[
             -4000:
         ]
-        return {"summary": summary, "messages": messages[-6:]}
+        return {
+            "summary": summary,
+            "messages": [{"__replace__": "true"}, *messages[-6:]],
+        }
 
     @staticmethod
     def _result(result: dict[str, Any]) -> ChatResult:

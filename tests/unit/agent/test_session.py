@@ -54,6 +54,64 @@ def test_cross_runner_follow_up_keeps_the_subject(tmp_path: Path) -> None:
     assert "重返未来" in seen[-1]
 
 
+def test_compiler_follow_up_uses_resolved_subject_not_previous_question(
+    tmp_path: Path,
+) -> None:
+    seen: list[str] = []
+    runner = LangGraphSessionRunner(
+        tmp_path / "checkpoints.sqlite3",
+        research=lambda query: seen.append(query) or query,
+    )
+
+    runner.chat("C和C++有什么区别", session_id="languages")
+    runner.chat("它们都用什么编译器", session_id="languages")
+
+    state = runner.get_state("languages")
+    assert state["resolved_subject"] == "C和C++"
+    assert seen[-1] == "C和C++都使用哪些常见编译器"
+
+
+def test_person_follow_ups_keep_subject_and_change_required_facets(
+    tmp_path: Path,
+) -> None:
+    seen: list[str] = []
+    runner = LangGraphSessionRunner(
+        tmp_path / "checkpoints.sqlite3",
+        research=lambda query: seen.append(query) or query,
+    )
+
+    runner.chat("成龙是谁", session_id="jackie")
+    runner.chat("他的代表作有哪些", session_id="jackie")
+    works_state = runner.get_state("jackie")
+    runner.chat("他现在多大了", session_id="jackie")
+    age_state = runner.get_state("jackie")
+
+    assert works_state["resolved_subject"] == "成龙"
+    assert works_state["intent"] == "representative_works"
+    assert works_state["required_facets"] == ["representative_works"]
+    assert age_state["standalone_query"] == "成龙的出生日期及截至当前日期的年龄"
+    assert age_state["intent"] == "age"
+    assert age_state["required_facets"] == ["birth_date", "age"]
+    assert seen[-1] == "成龙的出生日期及截至当前日期的年龄"
+
+
+def test_sessions_do_not_share_resolved_subject_or_messages(tmp_path: Path) -> None:
+    runner = LangGraphSessionRunner(
+        tmp_path / "checkpoints.sqlite3", research=lambda query: query
+    )
+
+    runner.chat("重返未来1999是个什么游戏", session_id="game")
+    runner.chat("成龙是谁", session_id="person")
+
+    game = runner.get_state("game")
+    person = runner.get_state("person")
+    assert game["resolved_subject"] == "重返未来1999"
+    assert person["resolved_subject"] == "成龙"
+    assert [message["content"] for message in game["messages"]] != [
+        message["content"] for message in person["messages"]
+    ]
+
+
 def test_contextualizer_keeps_current_input_and_resolves_person_pronouns() -> None:
     works = LangGraphSessionRunner._contextualize(
         {

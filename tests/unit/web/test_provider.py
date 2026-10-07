@@ -1,6 +1,7 @@
 """Tests for the optional Tavily web search provider."""
 
 import json
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -80,5 +81,29 @@ def test_tavily_provider_hides_remote_errors() -> None:
 
     with pytest.raises(WebSearchError, match="web search request failed") as error:
         provider.search("web security", 1)
+
+    assert "test-key" not in str(error.value)
+
+
+def test_tavily_provider_reports_safe_http_status() -> None:
+    def failing_opener(request, timeout: float):
+        raise HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+
+    provider = TavilySearchProvider("test-key", opener=failing_opener)
+
+    with pytest.raises(WebSearchError, match="HTTP 401") as error:
+        provider.search("成龙是谁", 1)
+
+    assert "test-key" not in str(error.value)
+
+
+def test_tavily_provider_reports_network_error_without_key() -> None:
+    def failing_opener(request, timeout: float):
+        raise URLError("connection refused for key=test-key")
+
+    provider = TavilySearchProvider("test-key", opener=failing_opener)
+
+    with pytest.raises(WebSearchError, match="network error") as error:
+        provider.search("成龙是谁", 1)
 
     assert "test-key" not in str(error.value)
