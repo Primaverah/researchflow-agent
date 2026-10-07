@@ -256,6 +256,22 @@ def test_compiler_page_requires_compiler_evidence_not_only_subject() -> None:
         )
         is False
     )
+
+
+def test_person_profile_requires_biographical_evidence_not_a_name_mention() -> None:
+    unrelated = GraphAgentRunner._evidence_rejection_reason(
+        "村上春树是谁",
+        "读者讨论",
+        "读者讨论村上春树小说中的城市意象和阅读感受。",
+    )
+    biography = GraphAgentRunner._evidence_rejection_reason(
+        "村上春树是谁",
+        "村上春树简介",
+        "村上春树是日本小说家，代表作被翻译为多种语言并在世界各地出版。",
+    )
+
+    assert unrelated == "missing_person_identity_evidence"
+    assert biography is None
     assert (
         GraphAgentRunner._is_relevant(
             "C和C++都使用哪些常见编译器",

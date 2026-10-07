@@ -5,6 +5,7 @@ graph framework.  Nodes produce patches; the small engine owns routing and
 patch application so the nodes can later be adapted to a graph runtime.
 """
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from enum import StrEnum
@@ -307,16 +308,22 @@ class GraphAgentRunner:
                 continue
             if call.tool_name == "read_document":
                 document = ReadDocumentOutput.model_validate(result.output)
-                if self._is_relevant(state.query, document.title, document.content):
+                rejection = self._evidence_rejection_reason(
+                    state.query, document.title, document.content
+                )
+                if rejection is None:
                     documents.append(document)
                 else:
-                    rejected.append(document.path)
+                    rejected.append(f"{document.path} — {rejection}")
             else:
                 source = WebSource.model_validate(result.output)
-                if self._is_relevant(state.query, source.title, source.content):
+                rejection = self._evidence_rejection_reason(
+                    state.query, source.title, source.content
+                )
+                if rejection is None:
                     web_sources.append(source)
                 else:
-                    rejected.append(source.url)
+                    rejected.append(f"{source.url} — {rejection}")
         return {
             "agent": self._agent(state),
             "documents": documents,
@@ -461,16 +468,63 @@ class GraphAgentRunner:
 
     @staticmethod
     def _is_relevant(query: str, title: str, content: str) -> bool:
+        return (
+            GraphAgentRunner._evidence_rejection_reason(query, title, content) is None
+        )
+
+    @staticmethod
+    def _evidence_rejection_reason(query: str, title: str, content: str) -> str | None:
         text = f"{title}\n{content}".casefold()
         if "编译器" in query or "compiler" in query.casefold():
-            return any(
+            if any(
                 term in text for term in ("编译器", "compiler", "gcc", "clang", "msvc")
-            )
+            ):
+                return None
+            return "missing_compiler_evidence"
         if any(term in query for term in ("代表作", "代表电影", "作品有哪些")):
-            return any(term in text for term in ("电影", "作品", "主演", "代表作"))
+            if any(term in text for term in ("电影", "作品", "主演", "代表作")):
+                return None
+            return "missing_work_evidence"
         if any(term in query for term in ("出生日期", "年龄", "多大")):
-            return any(term in text for term in ("出生", "生于", "born"))
-        return True
+            if any(term in text for term in ("出生", "生于", "born")):
+                return None
+            return "missing_birth_evidence"
+        subject = GraphAgentRunner._person_subject(query)
+        if subject:
+            if subject.casefold() not in text:
+                return "missing_subject_coverage"
+            if not any(
+                term in text
+                for term in (
+                    "作家",
+                    "小说家",
+                    "演员",
+                    "科学家",
+                    "记者",
+                    "出生",
+                    "国籍",
+                    "代表作",
+                    "writer",
+                    "novelist",
+                    "actor",
+                    "scientist",
+                    "journalist",
+                    "born",
+                    "nationality",
+                    "known for",
+                )
+            ):
+                return "missing_person_identity_evidence"
+            if len(content.strip()) < 24:
+                return "insufficient_person_profile_content"
+        return None
+
+    @staticmethod
+    def _person_subject(query: str) -> str:
+        match = re.fullmatch(
+            r"\s*(.+?)(?:是谁|是誰|who\s+is)\s*[?？.!！]*\s*", query, re.I
+        )
+        return match.group(1).strip(" ，。？?!！") if match else ""
 
     @staticmethod
     def _local_candidates(output: Any) -> list[GraphCandidate]:
