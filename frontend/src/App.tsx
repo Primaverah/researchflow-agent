@@ -1,4 +1,26 @@
-export function App() {
+import type { RunSnapshot, SourceSnapshot } from "./api";
+
+type AppProps = {
+  run?: RunSnapshot;
+};
+
+function SourceList({ sources }: { sources: SourceSnapshot[] }) {
+  if (sources.length === 0) {
+    return <p>无</p>;
+  }
+  return (
+    <ul>
+      {sources.map((source) => (
+        <li key={source.source_id}>
+          {source.title}
+          {source.reason ? `：${source.reason}` : ""}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function App({ run }: AppProps) {
   return (
     <main>
       <aside>
@@ -12,11 +34,11 @@ export function App() {
       </section>
       <aside>
         <h2>搜索候选</h2>
-        <p>尚无候选</p>
+        <SourceList sources={run?.evidence.candidates ?? []} />
         <h2>已读取正文</h2>
-        <p>尚无已读取来源</p>
+        <SourceList sources={run?.evidence.read_sources ?? []} />
         <h2>拒绝或读取失败</h2>
-        <p>尚无拒绝来源</p>
+        <SourceList sources={run?.evidence.rejected_sources ?? []} />
       </aside>
     </main>
   );
