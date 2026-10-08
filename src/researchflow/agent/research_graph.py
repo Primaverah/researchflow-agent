@@ -72,6 +72,7 @@ class LangGraphResearchRunner:
         graph.add_node("plan", self._plan)
         graph.add_node("retrieve", self._retrieve)
         graph.add_node("assess", self._assess)
+        graph.add_node("replan", self._replan)
         graph.add_node("read_sources", self._read_sources)
         graph.add_node("synthesize", self._synthesize)
         graph.add_node("verify", self._verify)
@@ -82,7 +83,12 @@ class LangGraphResearchRunner:
         graph.add_edge("plan", "retrieve")
         graph.add_edge("retrieve", "read_sources")
         graph.add_edge("read_sources", "assess")
-        graph.add_edge("assess", "synthesize")
+        graph.add_conditional_edges(
+            "assess",
+            self._route_after_assess,
+            {"replan": "replan", "synthesize": "synthesize"},
+        )
+        graph.add_edge("replan", "retrieve")
         graph.add_edge("synthesize", "verify")
         graph.add_edge("verify", "save")
         graph.add_edge("save", "finish")
@@ -130,6 +136,20 @@ class LangGraphResearchRunner:
         return self._update(
             state, self._legacy._read_sources(state, self._context_or_raise())
         )
+
+    def _replan(self, value: ResearchGraphState) -> ResearchGraphState:
+        state = self._state(value)
+        return self._update(
+            state, self._legacy._replan(state, self._context_or_raise())
+        )
+
+    def _route_after_assess(self, value: ResearchGraphState) -> str:
+        state = self._state(value)
+        if state.documents or state.web_sources:
+            return "synthesize"
+        if state.replans < state.max_replans:
+            return "replan"
+        return "synthesize"
 
     def _synthesize(self, value: ResearchGraphState) -> ResearchGraphState:
         state = self._state(value)
