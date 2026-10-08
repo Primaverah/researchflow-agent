@@ -3,6 +3,7 @@
 from researchflow.application.models import (
     EventEnvelope,
     EvidenceSnapshot,
+    ResumeTurn,
     RunSnapshot,
     RunStatus,
     SessionSnapshot,
@@ -16,6 +17,7 @@ __all__ = [
     "EventEnvelope",
     "RunSnapshot",
     "RunStatus",
+    "ResumeTurn",
     "SessionSnapshot",
     "SqliteRunStore",
     "StartTurn",

@@ -32,6 +32,14 @@ class StartTurn(DomainModel):
     idempotency_key: str
 
 
+class ResumeTurn(DomainModel):
+    """A durable answer to a pending session clarification."""
+
+    session_id: str
+    answer: str
+    idempotency_key: str
+
+
 class SourceSnapshot(DomainModel):
     source_id: str
     title: str

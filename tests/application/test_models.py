@@ -1,7 +1,12 @@
 from datetime import UTC, datetime
 
 from researchflow.agent.graph import AgentGraphState, GraphCandidate
-from researchflow.application.models import EvidenceSnapshot, RunSnapshot, RunStatus
+from researchflow.application.models import (
+    EvidenceSnapshot,
+    ResumeTurn,
+    RunSnapshot,
+    RunStatus,
+)
 from researchflow.domain import AgentState, AgentStatus
 from researchflow.tools.offline import ReadDocumentOutput
 
@@ -51,3 +56,13 @@ def test_insufficient_evidence_is_not_answered_status() -> None:
     )
 
     assert snapshot.status is not RunStatus.COMPLETED
+
+
+def test_resume_turn_keeps_the_original_session_identity() -> None:
+    request = ResumeTurn(
+        session_id="clarify-session",
+        answer="research local tools",
+        idempotency_key="r1",
+    )
+
+    assert request.session_id == "clarify-session"

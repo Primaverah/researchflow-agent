@@ -669,8 +669,18 @@ def serve(
 
     import uvicorn
 
+    session_runner = _session_runner(
+        documents_dir,
+        output_dir,
+        agent_mode=agent_mode,
+        enable_web=enable_web,
+        allowed_domains=tuple(allowed_domain or ()),
+        llm_overrides=ctx.obj["llm_overrides"],
+    )
     uvicorn.run(
-        create_local_app(_session_database(output_dir), workflow),
+        create_local_app(
+            _session_database(output_dir), workflow, session_runner=session_runner
+        ),
         host=host,
         port=port,
     )

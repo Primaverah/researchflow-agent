@@ -11,5 +11,9 @@ from researchflow.domain import AgentState
 def create_local_app(
     database: Path,
     workflow: Callable[[str, str], AgentState],
+    *,
+    session_runner: object | None = None,
 ):
-    return create_app(ResearchService(database, workflow=workflow))
+    return create_app(
+        ResearchService(database, workflow=workflow, session_runner=session_runner)
+    )

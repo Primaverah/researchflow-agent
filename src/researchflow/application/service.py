@@ -7,6 +7,7 @@ from pathlib import Path
 from researchflow.application.events import EventBroker
 from researchflow.application.models import (
     EventEnvelope,
+    ResumeTurn,
     RunSnapshot,
     RunStatus,
     SessionSnapshot,
@@ -23,15 +24,19 @@ class ResearchService:
         database: Path,
         *,
         workflow: Callable[..., AgentState],
+        session_runner: object | None = None,
     ) -> None:
         self._store = SqliteRunStore(database)
         self._events = EventBroker(self._store)
         self._workflow = workflow
+        self._session_runner = session_runner
 
     def start_turn(self, request: StartTurn) -> RunSnapshot:
         snapshot = self._store.create_run(request.session_id, request.idempotency_key)
         if snapshot.status is not RunStatus.CREATED:
             return snapshot
+        if self._session_runner is not None:
+            return self._start_session_turn(snapshot, request)
         started = self._events.publish(
             run_id=snapshot.run_id,
             session_id=request.session_id,
@@ -75,6 +80,51 @@ class ResearchService:
                     "answer": state.final_answer,
                     "last_event_id": terminal_event_id,
                 }
+            )
+        )
+
+    def resume_turn(self, request: ResumeTurn) -> RunSnapshot:
+        previous = self._store.get_resume(request.session_id, request.idempotency_key)
+        if previous is not None:
+            return previous
+        waiting = [
+            run
+            for run in self._store.list_session_runs(request.session_id)
+            if run.status is RunStatus.WAITING_FOR_INPUT
+        ]
+        if len(waiting) != 1 or self._session_runner is None:
+            raise ValueError("session does not have exactly one waiting run")
+        result = self._session_runner.resume(request.session_id, request.answer)
+        snapshot = self._store.save(
+            waiting[0].model_copy(
+                update={
+                    "status": RunStatus.COMPLETED,
+                    "answer": result.response,
+                    "interrupt_prompt": None,
+                }
+            )
+        )
+        self._store.save_resume(request.session_id, request.idempotency_key, snapshot)
+        return snapshot
+
+    def _start_session_turn(
+        self, snapshot: RunSnapshot, request: StartTurn
+    ) -> RunSnapshot:
+        result = self._session_runner.chat(
+            request.message, session_id=request.session_id
+        )
+        if result.interrupted:
+            return self._store.save(
+                snapshot.model_copy(
+                    update={
+                        "status": RunStatus.WAITING_FOR_INPUT,
+                        "interrupt_prompt": result.prompt,
+                    }
+                )
+            )
+        return self._store.save(
+            snapshot.model_copy(
+                update={"status": RunStatus.COMPLETED, "answer": result.response}
             )
         )
 

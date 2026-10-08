@@ -78,6 +78,25 @@ class SqliteRunStore:
         with self._connect() as connection:
             return self._get(connection, run_id)
 
+    def get_resume(self, session_id: str, idempotency_key: str) -> RunSnapshot | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT run_id FROM researchflow_resume_idempotency "
+                "WHERE session_id = ? AND idempotency_key = ?",
+                (session_id, idempotency_key),
+            ).fetchone()
+            return None if row is None else self._get(connection, row[0])
+
+    def save_resume(
+        self, session_id: str, idempotency_key: str, snapshot: RunSnapshot
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO researchflow_resume_idempotency "
+                "(session_id, idempotency_key, run_id) VALUES (?, ?, ?)",
+                (session_id, idempotency_key, snapshot.run_id),
+            )
+
     def save(self, snapshot: RunSnapshot) -> RunSnapshot:
         updated = snapshot.model_copy(update={"updated_at": _utc_now()})
         with self._connect() as connection:
@@ -141,6 +160,11 @@ class SqliteRunStore:
                 "(run_id TEXT NOT NULL, event_id INTEGER NOT NULL, "
                 "payload TEXT NOT NULL, "
                 "PRIMARY KEY (run_id, event_id))"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS researchflow_resume_idempotency "
+                "(session_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, "
+                "run_id TEXT NOT NULL, PRIMARY KEY (session_id, idempotency_key))"
             )
 
     def _connect(self) -> sqlite3.Connection:

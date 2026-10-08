@@ -12,6 +12,7 @@ export type RunSnapshot = {
   session_id: string;
   status: string;
   answer?: string | null;
+  interrupt_prompt?: string | null;
   evidence: {
     candidates: SourceSnapshot[];
     read_sources: SourceSnapshot[];
@@ -62,6 +63,27 @@ export async function startTurn(
   );
   if (!response.ok) {
     throw new Error(`Unable to start research (${response.status})`);
+  }
+  return (await response.json()) as RunSnapshot;
+}
+
+export async function resumeTurn(
+  sessionId: string,
+  answer: string,
+): Promise<RunSnapshot> {
+  const response = await fetch(
+    `/api/sessions/${encodeURIComponent(sessionId)}/resume`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": crypto.randomUUID(),
+      },
+      body: JSON.stringify({ answer }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Unable to resume research (${response.status})`);
   }
   return (await response.json()) as RunSnapshot;
 }

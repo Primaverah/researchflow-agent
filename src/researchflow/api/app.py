@@ -6,12 +6,16 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from researchflow.application.models import StartTurn
+from researchflow.application.models import ResumeTurn, StartTurn
 from researchflow.application.service import ResearchService
 
 
 class TurnRequest(BaseModel):
     message: str = Field(min_length=1)
+
+
+class ResumeRequest(BaseModel):
+    answer: str = Field(min_length=1)
 
 
 def create_app(service: ResearchService) -> FastAPI:
@@ -40,6 +44,25 @@ def create_app(service: ResearchService) -> FastAPI:
                 idempotency_key=idempotency_key,
             )
         )
+
+    @app.post("/api/sessions/{session_id}/resume")
+    def resume_turn(
+        session_id: str,
+        request: ResumeRequest,
+        idempotency_key: str | None = Header(default=None),
+    ):
+        if not idempotency_key:
+            raise HTTPException(status_code=422, detail="Idempotency-Key is required")
+        try:
+            return service.resume_turn(
+                ResumeTurn(
+                    session_id=session_id,
+                    answer=request.answer,
+                    idempotency_key=idempotency_key,
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str):

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   getRun,
   listSessions,
+  resumeTurn,
   startTurn,
   type RunSnapshot,
   type SourceSnapshot,
@@ -78,7 +79,10 @@ export function App({ run, runId }: AppProps) {
       return;
     }
     try {
-      const nextRun = await startTurn(sessionId, content);
+      const nextRun =
+        snapshot?.status === "waiting_for_input"
+          ? await resumeTurn(sessionId, content)
+          : await startTurn(sessionId, content);
       setLoadedRun(nextRun);
       setMessage("");
       setSessions((items) =>
@@ -123,6 +127,7 @@ export function App({ run, runId }: AppProps) {
       <section>
         <h2>研究报告</h2>
         {snapshot ? <p>运行状态：{snapshot.status}</p> : null}
+        {snapshot?.interrupt_prompt ? <p>{snapshot.interrupt_prompt}</p> : null}
         {snapshot?.answer ? <pre>{snapshot.answer}</pre> : null}
         {loadError ? <p role="alert">{loadError}</p> : null}
         <textarea
@@ -131,7 +136,7 @@ export function App({ run, runId }: AppProps) {
           onChange={(event) => setMessage(event.target.value)}
         />
         <button type="button" onClick={submitTurn}>
-          发送
+          {snapshot?.status === "waiting_for_input" ? "继续研究" : "发送"}
         </button>
       </section>
       <aside>

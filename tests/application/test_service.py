@@ -1,4 +1,5 @@
-from researchflow.application.models import RunStatus, StartTurn
+from researchflow.agent.session import ChatResult
+from researchflow.application.models import ResumeTurn, RunStatus, StartTurn
 from researchflow.application.service import ResearchService
 from researchflow.domain import AgentState, AgentStatus
 
@@ -142,3 +143,46 @@ def test_event_aware_workflow_projects_evidence_while_it_runs(tmp_path) -> None:
 
     assert snapshot.evidence.candidates[0].title == "候选来源"
     assert snapshot.evidence.rejected_sources[0].reason == "low_relevance"
+
+
+def test_session_runner_persists_interrupt_then_resumes_once(tmp_path) -> None:
+    class FakeSessionRunner:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def chat(self, message: str, *, session_id: str) -> ChatResult:
+            self.calls.append(("chat", session_id))
+            return ChatResult(interrupted=True, prompt="请补充问题")
+
+        def resume(self, session_id: str, answer: str) -> ChatResult:
+            self.calls.append((answer, session_id))
+            return ChatResult(response="已恢复")
+
+    runner = FakeSessionRunner()
+    service = ResearchService(
+        tmp_path / "checkpoints.sqlite3",
+        workflow=lambda message, _: AgentState(
+            run_id="unused",
+            query=message,
+            status=AgentStatus.COMPLETED,
+            final_answer="x",
+        ),
+        session_runner=runner,
+    )
+
+    pending = service.start_turn(
+        StartTurn(session_id="clarify", message=" ", idempotency_key="start")
+    )
+    resumed = service.resume_turn(
+        ResumeTurn(session_id="clarify", answer="具体问题", idempotency_key="resume")
+    )
+    duplicate = service.resume_turn(
+        ResumeTurn(session_id="clarify", answer="具体问题", idempotency_key="resume")
+    )
+
+    assert pending.status is RunStatus.WAITING_FOR_INPUT
+    assert pending.interrupt_prompt == "请补充问题"
+    assert resumed.status is RunStatus.COMPLETED
+    assert resumed.answer == "已恢复"
+    assert duplicate.run_id == resumed.run_id
+    assert runner.calls == [("chat", "clarify"), ("具体问题", "clarify")]
