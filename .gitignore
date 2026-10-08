@@ -223,6 +223,7 @@ temp/
 # Local Web console build artifacts
 frontend/node_modules/
 frontend/dist/
+frontend/*.tsbuildinfo
 
 # PyPI configuration file
 .pypirc
