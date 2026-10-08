@@ -26,6 +26,12 @@ class RunStatus(StrEnum):
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
 
+class StartTurn(DomainModel):
+    session_id: str
+    message: str
+    idempotency_key: str
+
+
 class SourceSnapshot(DomainModel):
     source_id: str
     title: str

@@ -5,8 +5,10 @@ from researchflow.application.models import (
     EvidenceSnapshot,
     RunSnapshot,
     RunStatus,
+    StartTurn,
 )
 from researchflow.application.run_store import SqliteRunStore
+from researchflow.application.service import ResearchService
 
 __all__ = [
     "EvidenceSnapshot",
@@ -14,4 +16,6 @@ __all__ = [
     "RunSnapshot",
     "RunStatus",
     "SqliteRunStore",
+    "StartTurn",
+    "ResearchService",
 ]

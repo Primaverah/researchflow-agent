@@ -67,6 +67,25 @@ class SqliteRunStore:
             ).fetchall()
             return [self._get(connection, row[0]) for row in rows]
 
+    def get_run(self, run_id: str) -> RunSnapshot:
+        with self._connect() as connection:
+            return self._get(connection, run_id)
+
+    def save(self, snapshot: RunSnapshot) -> RunSnapshot:
+        updated = snapshot.model_copy(update={"updated_at": _utc_now()})
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE researchflow_runs SET status = ?, updated_at = ?, payload = ? "
+                "WHERE run_id = ?",
+                (
+                    updated.status.value,
+                    updated.updated_at.isoformat(),
+                    updated.model_dump_json(),
+                    updated.run_id,
+                ),
+            )
+        return updated
+
     def _initialize(self) -> None:
         with self._connect() as connection:
             connection.execute(
