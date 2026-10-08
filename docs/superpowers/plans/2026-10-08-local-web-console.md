@@ -72,6 +72,7 @@ def test_evidence_snapshot_keeps_candidates_read_and_rejected_separate() -> None
     assert snapshot.read_sources[0].source_id == "source-1"
     assert snapshot.rejected_sources[0].reason == "web_low_quality_content"
 
+
 def test_insufficient_evidence_is_not_answered_status() -> None:
     assert RunSnapshot(..., evidence_status="insufficient").status != "answered"
 ```
@@ -93,6 +94,7 @@ def test_run_store_returns_same_run_for_same_session_and_idempotency_key(tmp_pat
     first = store.create_run("session-a", "key-1")
     second = store.create_run("session-a", "key-1")
     assert second.run_id == first.run_id
+
 
 def test_run_store_isolates_session_ids(tmp_path):
     ...
@@ -132,6 +134,7 @@ git commit -m "feat: add persistent research run metadata"
 def test_start_turn_persists_running_then_completed_snapshot(service):
     snapshot = service.start_turn(StartTurn(session_id="one", message="tool calling"))
     assert snapshot.status is RunStatus.COMPLETED
+
 
 def test_duplicate_start_does_not_execute_workflow_twice(service):
     service.start_turn(StartTurn(session_id="one", message="q", idempotency_key="k"))
@@ -198,8 +201,12 @@ def test_turn_post_returns_202_and_run_id(client):
     assert response.status_code == 202
     assert response.json()["session_id"] == "demo"
 
+
 def test_resume_rejects_non_waiting_run(client):
-    assert client.post("/api/sessions/demo/resume", json={"answer": "x"}).status_code == 409
+    assert (
+        client.post("/api/sessions/demo/resume", json={"answer": "x"}).status_code
+        == 409
+    )
 ```
 
 - [ ] **Step 2: Run API tests and verify they fail**
@@ -254,8 +261,8 @@ def test_read_source_event_contains_metadata_not_full_body(run_events):
     assert event.data["content_length"] > 0
     assert "content" not in event.data
 
-def test_rejected_candidate_never_appears_in_read_source_events(run_events):
-    ...
+
+def test_rejected_candidate_never_appears_in_read_source_events(run_events): ...
 ```
 
 - [ ] **Step 2: Run event tests and verify they fail**
@@ -356,9 +363,12 @@ git commit -m "feat: stream research progress to web console"
 ```python
 def test_new_runner_resumes_pending_interrupt_with_original_thread_id(tmp_path):
     pending = first_service.start_turn(StartTurn(session_id="clarify", message=" "))
-    resumed = rebuilt_service.resume_turn(ResumeTurn(session_id="clarify", answer="tool calling"))
+    resumed = rebuilt_service.resume_turn(
+        ResumeTurn(session_id="clarify", answer="tool calling")
+    )
     assert resumed.status is RunStatus.COMPLETED
     assert workflow.calls == ["tool calling"]
+
 
 def test_duplicate_resume_key_does_not_repeat_research(service): ...
 ```
