@@ -1,4 +1,4 @@
-from researchflow.agent.session import ChatResult
+from researchflow.agent.session import ChatResult, LangGraphSessionRunner
 from researchflow.application.models import ResumeTurn, RunStatus, StartTurn
 from researchflow.application.service import ResearchService
 from researchflow.domain import AgentState, AgentStatus
@@ -186,3 +186,45 @@ def test_session_runner_persists_interrupt_then_resumes_once(tmp_path) -> None:
     assert resumed.answer == "已恢复"
     assert duplicate.run_id == resumed.run_id
     assert runner.calls == [("chat", "clarify"), ("具体问题", "clarify")]
+
+
+def test_rebuilt_runner_resumes_waiting_run_with_original_session_id(tmp_path) -> None:
+    database = tmp_path / "checkpoints.sqlite3"
+    first_runner = LangGraphSessionRunner(database, research=lambda _query: "unused")
+    first_service = ResearchService(
+        database,
+        workflow=lambda message, _: AgentState(
+            run_id="unused",
+            query=message,
+            status=AgentStatus.COMPLETED,
+            final_answer="x",
+        ),
+        session_runner=first_runner,
+    )
+    pending = first_service.start_turn(
+        StartTurn(session_id="restart", message=" ", idempotency_key="start")
+    )
+    first_runner.close()
+
+    calls: list[str] = []
+    second_runner = LangGraphSessionRunner(
+        database, research=lambda query: calls.append(query) or "restored"
+    )
+    second_service = ResearchService(
+        database,
+        workflow=lambda message, _: AgentState(
+            run_id="unused",
+            query=message,
+            status=AgentStatus.COMPLETED,
+            final_answer="x",
+        ),
+        session_runner=second_runner,
+    )
+    resumed = second_service.resume_turn(
+        ResumeTurn(session_id="restart", answer="具体问题", idempotency_key="resume")
+    )
+    second_runner.close()
+
+    assert pending.status is RunStatus.WAITING_FOR_INPUT
+    assert resumed.status is RunStatus.COMPLETED
+    assert calls == ["具体问题"]
