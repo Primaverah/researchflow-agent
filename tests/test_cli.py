@@ -173,6 +173,14 @@ def test_run_help_lists_modes_and_options() -> None:
     assert "--verbose" in result.stdout
 
 
+def test_serve_help_documents_loopback_options() -> None:
+    result = runner.invoke(app, ["serve", "--help"])
+
+    assert result.exit_code == 0
+    assert "--host" in result.stdout
+    assert "--port" in result.stdout
+
+
 def test_version_is_available() -> None:
     result = runner.invoke(app, ["--version"])
 

@@ -67,6 +67,13 @@ class SqliteRunStore:
             ).fetchall()
             return [self._get(connection, row[0]) for row in rows]
 
+    def list_session_ids(self) -> list[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT session_id FROM researchflow_runs ORDER BY session_id"
+            ).fetchall()
+            return [row[0] for row in rows]
+
     def get_run(self, run_id: str) -> RunSnapshot:
         with self._connect() as connection:
             return self._get(connection, run_id)

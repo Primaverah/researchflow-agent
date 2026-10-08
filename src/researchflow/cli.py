@@ -609,6 +609,45 @@ def run_agent(
         raise typer.Exit(code=1)
 
 
+@app.command("serve")
+def serve(
+    ctx: typer.Context,
+    documents_dir: Annotated[Path, typer.Option("--documents-dir")] = Path(
+        "examples/documents"
+    ),
+    output_dir: Annotated[Path, typer.Option("--output-dir")] = Path("output"),
+    host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", min=1, max=65535)] = 8000,
+) -> None:
+    """Serve the local Web API on a loopback address."""
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        _input_error("--host 只能使用本地回环地址")
+    _validate_context_paths(documents_dir, output_dir)
+    from researchflow.api.server import create_local_app
+
+    def workflow(message: str, _: str) -> AgentState:
+        state, _context = _run_workflow(
+            message,
+            documents_dir,
+            output_dir,
+            10,
+            "rule",
+            False,
+            (),
+            ctx.obj["llm_overrides"],
+            "graph",
+        )
+        return state
+
+    import uvicorn
+
+    uvicorn.run(
+        create_local_app(_session_database(output_dir), workflow),
+        host=host,
+        port=port,
+    )
+
+
 @app.command("chat")
 def chat(
     ctx: typer.Context,

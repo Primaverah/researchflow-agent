@@ -115,6 +115,11 @@ class RunSnapshot(DomainModel):
     last_event_id: int = 0
 
 
+class SessionSnapshot(DomainModel):
+    session_id: str
+    runs: list[RunSnapshot] = Field(default_factory=list)
+
+
 class EventEnvelope(DomainModel):
     event_id: int
     run_id: str

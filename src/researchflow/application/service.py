@@ -3,7 +3,12 @@
 from collections.abc import Callable
 from pathlib import Path
 
-from researchflow.application.models import RunSnapshot, RunStatus, StartTurn
+from researchflow.application.models import (
+    RunSnapshot,
+    RunStatus,
+    SessionSnapshot,
+    StartTurn,
+)
 from researchflow.application.run_store import SqliteRunStore
 from researchflow.domain import AgentState
 
@@ -40,3 +45,8 @@ class ResearchService:
 
     def get_run(self, run_id: str) -> RunSnapshot:
         return self._store.get_run(run_id)
+
+    def get_session(self, session_id: str) -> SessionSnapshot:
+        return SessionSnapshot(
+            session_id=session_id, runs=self._store.list_session_runs(session_id)
+        )

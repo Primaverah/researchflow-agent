@@ -34,4 +34,15 @@ def create_app(service: ResearchService) -> FastAPI:
             )
         )
 
+    @app.get("/api/runs/{run_id}")
+    def get_run(run_id: str):
+        try:
+            return service.get_run(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
+
+    @app.get("/api/sessions/{session_id}")
+    def get_session(session_id: str):
+        return service.get_session(session_id)
+
     return app
