@@ -1,6 +1,7 @@
 """Tests for the command-line interface."""
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -177,6 +178,17 @@ def test_version_is_available() -> None:
 
     assert result.exit_code == 0
     assert result.stdout.strip() == f"researchflow {__version__}"
+
+
+def test_run_records_completed_application_run(cli_paths) -> None:
+    documents, output = cli_paths
+
+    result = invoke_run(documents, output)
+
+    assert result.exit_code == 0
+    with sqlite3.connect(output / "sessions" / "checkpoints.sqlite3") as database:
+        rows = database.execute("SELECT status FROM researchflow_runs").fetchall()
+    assert rows == [("completed",)]
 
 
 def test_llm_check_uses_structured_fake_provider(

@@ -26,6 +26,7 @@ from researchflow.agent import (
     WebRulePlanner,
     WebStateSelector,
 )
+from researchflow.application import ResearchService, StartTurn
 from researchflow.config import load_local_secrets, load_project_config
 from researchflow.domain import AgentState, AgentStatus, ToolResult
 from researchflow.evaluation import evaluate_retriever
@@ -160,6 +161,15 @@ def _resolve_query(query: str | None) -> str:
 
 
 def _create_context(documents_dir: Path, output_dir: Path) -> ToolContext:
+    _validate_context_paths(documents_dir, output_dir)
+    return ToolContext(
+        working_directory=documents_dir,
+        output_directory=output_dir,
+        run_id=uuid4().hex,
+    )
+
+
+def _validate_context_paths(documents_dir: Path, output_dir: Path) -> None:
     if not documents_dir.exists():
         _input_error("文档目录不存在")
     if not documents_dir.is_dir():
@@ -170,11 +180,6 @@ def _create_context(documents_dir: Path, output_dir: Path) -> ToolContext:
         _input_error("输出目录无法创建")
     if not output_dir.is_dir():
         _input_error("输出路径不是目录")
-    return ToolContext(
-        working_directory=documents_dir,
-        output_directory=output_dir,
-        run_id=uuid4().hex,
-    )
 
 
 def _allow_llm_fallback() -> bool:
@@ -555,17 +560,33 @@ def run_agent(
         _input_error("--orchestrator 必须为 loop 或 graph")
     resolved_query = _resolve_query(query)
     try:
-        state, context = _run_workflow(
-            resolved_query,
-            documents_dir,
-            output_dir,
-            max_steps,
-            agent_mode,
-            enable_web,
-            tuple(allowed_domain or ()),
-            ctx.obj["llm_overrides"],
-            orchestrator,
+        _validate_context_paths(documents_dir, output_dir)
+        execution: dict[str, tuple[AgentState, ToolContext]] = {}
+
+        def workflow(message: str, _: str) -> AgentState:
+            state, context = _run_workflow(
+                message,
+                documents_dir,
+                output_dir,
+                max_steps,
+                agent_mode,
+                enable_web,
+                tuple(allowed_domain or ()),
+                ctx.obj["llm_overrides"],
+                orchestrator,
+            )
+            execution["result"] = (state, context)
+            return state
+
+        service = ResearchService(_session_database(output_dir), workflow=workflow)
+        service.start_turn(
+            StartTurn(
+                session_id=f"run-{uuid4().hex}",
+                message=resolved_query,
+                idempotency_key=uuid4().hex,
+            )
         )
+        state, context = execution["result"]
     except WebSearchConfigurationError as exc:
         _input_error(str(exc))
     except LLMDependencyError as exc:
