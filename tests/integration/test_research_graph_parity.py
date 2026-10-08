@@ -121,3 +121,28 @@ def test_langgraph_planning_keeps_legacy_candidate_order(tmp_path: Path) -> None
         "first.md",
         "second.md",
     ]
+
+
+def test_langgraph_research_runner_reads_selected_sources(tmp_path: Path) -> None:
+    documents = tmp_path / "documents"
+    output = tmp_path / "output"
+    documents.mkdir()
+    output.mkdir()
+    (documents / "evidence.md").write_text(
+        "# Evidence\n\n可靠正文内容。", encoding="utf-8"
+    )
+    context = ToolContext(
+        working_directory=documents, output_directory=output, run_id="read-run"
+    )
+    registry = ToolRegistry()
+    for tool in create_offline_tools(context):
+        registry.register(tool)
+    state = LangGraphResearchRunner(
+        tmp_path / "checkpoints.sqlite3",
+        RulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        ToolExecutor(registry, JsonlTraceRecorder()),
+    ).run("可靠正文", context, thread_id="read-session")
+
+    assert state.documents[0].path == "evidence.md"

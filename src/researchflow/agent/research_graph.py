@@ -58,10 +58,12 @@ class LangGraphResearchRunner:
         graph.add_node("plan", self._plan)
         graph.add_node("retrieve", self._retrieve)
         graph.add_node("assess", self._assess)
+        graph.add_node("read_sources", self._read_sources)
         graph.add_edge(START, "initialize")
         graph.add_edge("initialize", "plan")
         graph.add_edge("plan", "retrieve")
-        graph.add_edge("retrieve", "assess")
+        graph.add_edge("retrieve", "read_sources")
+        graph.add_edge("read_sources", "assess")
         graph.add_edge("assess", END)
         return graph
 
@@ -100,3 +102,9 @@ class LangGraphResearchRunner:
         if not patch and state.candidates:
             patch = {"evidence_status": EvidenceStatus.PARTIAL}
         return self._update(state, patch)
+
+    def _read_sources(self, value: ResearchGraphState) -> ResearchGraphState:
+        state = self._state(value)
+        return self._update(
+            state, self._legacy._read_sources(state, self._context_or_raise())
+        )
