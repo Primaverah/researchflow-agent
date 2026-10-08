@@ -27,7 +27,7 @@ from researchflow.agent import (
     WebRulePlanner,
     WebStateSelector,
 )
-from researchflow.application import ResearchService, StartTurn
+from researchflow.application import ResearchService, ResumeTurn, RunStatus, StartTurn
 from researchflow.config import load_local_secrets, load_project_config
 from researchflow.domain import AgentState, AgentStatus, ToolResult
 from researchflow.evaluation import evaluate_retriever
@@ -720,13 +720,33 @@ def chat(
     resolved_session = session_id or uuid4().hex
     try:
         content = message if message is not None else typer.prompt("消息")
-        result = session_runner.chat(content, session_id=resolved_session)
-        if result.interrupted:
-            result = session_runner.resume(
-                resolved_session, typer.prompt(result.prompt or "澄清")
+        service = ResearchService(
+            _session_database(output_dir),
+            workflow=lambda query, _: AgentState(
+                run_id="session-adapter",
+                query=query,
+                status=AgentStatus.COMPLETED,
+                final_answer="",
+            ),
+            session_runner=session_runner,
+        )
+        result = service.start_turn(
+            StartTurn(
+                session_id=resolved_session,
+                message=content,
+                idempotency_key=uuid4().hex,
+            )
+        )
+        if result.status is RunStatus.WAITING_FOR_INPUT:
+            result = service.resume_turn(
+                ResumeTurn(
+                    session_id=resolved_session,
+                    answer=typer.prompt(result.interrupt_prompt or "澄清"),
+                    idempotency_key=uuid4().hex,
+                )
             )
         typer.echo(f"session_id: {resolved_session}")
-        typer.echo(terminal_safe_text(result.response))
+        typer.echo(terminal_safe_text(result.answer or ""))
     except WebSearchConfigurationError as exc:
         _input_error(str(exc))
     except LLMDependencyError as exc:
