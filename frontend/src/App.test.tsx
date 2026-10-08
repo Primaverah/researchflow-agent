@@ -1,9 +1,13 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
 
 describe("App", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("keeps candidates, read sources, and rejected sources distinct", () => {
     render(
       <App
@@ -56,5 +60,28 @@ describe("App", () => {
     expect(
       screen.getByText("拒绝来源：web_low_quality_content"),
     ).toBeInTheDocument();
+  });
+
+  it("loads a supplied run without submitting another turn", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          run_id: "run-1",
+          session_id: "session-1",
+          status: "completed",
+          evidence: {
+            candidates: [],
+            read_sources: [],
+            rejected_sources: [],
+          },
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App runId="run-1" />);
+
+    expect(await screen.findByText("运行状态：completed")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("/api/runs/run-1");
   });
 });
