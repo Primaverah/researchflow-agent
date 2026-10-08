@@ -618,10 +618,25 @@ def serve(
     output_dir: Annotated[Path, typer.Option("--output-dir")] = Path("output"),
     host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port", min=1, max=65535)] = 8000,
+    enable_web: Annotated[
+        bool, typer.Option("--enable-web", help="Enable configured Web search.")
+    ] = False,
+    agent_mode: Annotated[
+        str, typer.Option("--agent-mode", help="Research agent mode: rule or llm.")
+    ] = "rule",
+    allowed_domain: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--allowed-domain",
+            help="Allowed web source domain; repeat to allow multiple.",
+        ),
+    ] = None,
 ) -> None:
     """Serve the local Web API on a loopback address."""
     if host not in {"127.0.0.1", "::1", "localhost"}:
         _input_error("--host 只能使用本地回环地址")
+    if agent_mode not in {"rule", "llm"}:
+        _input_error("--agent-mode 必须为 rule 或 llm")
     _validate_context_paths(documents_dir, output_dir)
     from researchflow.api.server import create_local_app
 
@@ -631,9 +646,9 @@ def serve(
             documents_dir,
             output_dir,
             10,
-            "rule",
-            False,
-            (),
+            agent_mode,
+            enable_web,
+            tuple(allowed_domain or ()),
             ctx.obj["llm_overrides"],
             "graph",
         )

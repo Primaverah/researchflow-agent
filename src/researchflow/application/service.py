@@ -61,6 +61,7 @@ class ResearchService:
             running.model_copy(
                 update={
                     "status": status,
+                    "answer": state.final_answer,
                     "last_event_id": completed.event_id,
                 }
             )

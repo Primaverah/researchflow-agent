@@ -108,6 +108,7 @@ class RunSnapshot(DomainModel):
     evidence: EvidenceSnapshot = Field(default_factory=EvidenceSnapshot)
     evidence_status: str | None = None
     evidence_gaps: list[str] = Field(default_factory=list)
+    answer: str | None = None
     end_reason: str | None = None
     generation_mode: str | None = None
     report_path: str | None = None

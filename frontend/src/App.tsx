@@ -104,6 +104,7 @@ export function App({ run, runId }: AppProps) {
       <section>
         <h2>研究报告</h2>
         {snapshot ? <p>运行状态：{snapshot.status}</p> : null}
+        {snapshot?.answer ? <pre>{snapshot.answer}</pre> : null}
         {loadError ? <p role="alert">{loadError}</p> : null}
         <textarea
           aria-label="研究问题"

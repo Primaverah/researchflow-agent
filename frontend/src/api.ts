@@ -11,6 +11,7 @@ export type RunSnapshot = {
   run_id: string;
   session_id: string;
   status: string;
+  answer?: string | null;
   evidence: {
     candidates: SourceSnapshot[];
     read_sources: SourceSnapshot[];

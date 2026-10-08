@@ -179,6 +179,8 @@ def test_serve_help_documents_loopback_options() -> None:
     assert result.exit_code == 0
     assert "--host" in result.stdout
     assert "--port" in result.stdout
+    assert "--enable-web" in result.stdout
+    assert "--agent-mode" in result.stdout
 
 
 def test_version_is_available() -> None:

@@ -18,6 +18,7 @@ def test_start_turn_persists_completed_snapshot(tmp_path) -> None:
     )
 
     assert snapshot.status is RunStatus.COMPLETED
+    assert snapshot.answer == "verified answer"
     assert service.get_run(snapshot.run_id).status is RunStatus.COMPLETED
 
 

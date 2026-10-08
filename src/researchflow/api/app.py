@@ -1,6 +1,9 @@
 """FastAPI application factory for local-only use."""
 
+import json
+
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from researchflow.application.models import StartTurn
@@ -44,6 +47,35 @@ def create_app(service: ResearchService) -> FastAPI:
             return service.get_run(run_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="run not found") from exc
+
+    @app.get("/api/runs/{run_id}/events")
+    def run_events(
+        run_id: str,
+        last_event_id: str | None = Header(default=None),
+    ) -> StreamingResponse:
+        try:
+            service.get_run(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
+        try:
+            after_event_id = int(last_event_id or "0")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="Last-Event-ID must be an integer"
+            ) from exc
+        if after_event_id < 0:
+            raise HTTPException(
+                status_code=422, detail="Last-Event-ID must not be negative"
+            )
+
+        def event_stream():
+            for event in service.events_for_run(run_id, after_event_id=after_event_id):
+                payload = json.dumps(
+                    event.data, ensure_ascii=False, separators=(",", ":")
+                )
+                yield f"id: {event.event_id}\nevent: {event.type}\ndata: {payload}\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @app.get("/api/sessions/{session_id}")
     def get_session(session_id: str):

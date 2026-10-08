@@ -63,6 +63,23 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders a final answer as plain text instead of source HTML", () => {
+    render(
+      <App
+        run={{
+          run_id: "run-1",
+          session_id: "session-1",
+          status: "completed",
+          answer: "<strong>受控回答</strong>",
+          evidence: { candidates: [], read_sources: [], rejected_sources: [] },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("<strong>受控回答</strong>")).toBeInTheDocument();
+    expect(screen.queryByText("受控回答", { selector: "strong" })).toBeNull();
+  });
+
   it("loads a supplied run without submitting another turn", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
