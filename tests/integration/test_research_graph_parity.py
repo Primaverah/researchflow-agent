@@ -37,3 +37,39 @@ def test_langgraph_research_runner_checkpoints_planning_and_retrieval(
 
     assert state.candidates[0].locator == "evidence.md"
     assert state.evidence_status is not None
+
+
+def test_langgraph_research_graph_state_is_available_to_a_new_runner(
+    tmp_path: Path,
+) -> None:
+    documents = tmp_path / "documents"
+    output = tmp_path / "output"
+    documents.mkdir()
+    output.mkdir()
+    (documents / "evidence.md").write_text("# Evidence\n\n可靠内容。", encoding="utf-8")
+    context = ToolContext(
+        working_directory=documents, output_directory=output, run_id="checkpoint-run"
+    )
+    registry = ToolRegistry()
+    for tool in create_offline_tools(context):
+        registry.register(tool)
+    database = tmp_path / "checkpoints.sqlite3"
+    first = LangGraphResearchRunner(
+        database,
+        RulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        ToolExecutor(registry, JsonlTraceRecorder()),
+    )
+    first.run("可靠内容", context, thread_id="recoverable")
+    second = LangGraphResearchRunner(
+        database,
+        RulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        ToolExecutor(registry, JsonlTraceRecorder()),
+    )
+
+    restored = second.get_state("recoverable")
+
+    assert restored.candidates[0].locator == "evidence.md"

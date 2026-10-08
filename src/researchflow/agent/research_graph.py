@@ -47,6 +47,11 @@ class LangGraphResearchRunner:
         )
         return AgentGraphState.model_validate(result["data"])
 
+    def get_state(self, thread_id: str) -> AgentGraphState:
+        """Load a persisted planning snapshot without executing any node."""
+        snapshot = self._graph.get_state({"configurable": {"thread_id": thread_id}})
+        return AgentGraphState.model_validate(snapshot.values["data"])
+
     def _build_graph(self) -> StateGraph:
         graph = StateGraph(ResearchGraphState)
         graph.add_node("initialize", self._initialize)
