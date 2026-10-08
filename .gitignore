@@ -220,6 +220,10 @@ temp/
 # Ruff stuff:
 .ruff_cache/
 
+# Local Web console build artifacts
+frontend/node_modules/
+frontend/dist/
+
 # PyPI configuration file
 .pypirc
 
