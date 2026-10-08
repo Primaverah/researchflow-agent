@@ -11,6 +11,7 @@ from researchflow.agent.graph import AgentGraphState, EvidenceStatus, GraphAgent
 from researchflow.agent.planner import RulePlanner
 from researchflow.agent.selector import StateSelector
 from researchflow.agent.summarizer import ExtractiveSummarizer
+from researchflow.domain import AgentStatus
 from researchflow.execution import ToolExecutor
 from researchflow.tools import ToolContext
 
@@ -41,9 +42,22 @@ class LangGraphResearchRunner:
         self, query: str, context: ToolContext, *, thread_id: str
     ) -> AgentGraphState:
         self._context = context
+        config = {"configurable": {"thread_id": thread_id}}
+        existing = self._graph.get_state(config)
+        if existing.values.get("data"):
+            restored = AgentGraphState.model_validate(existing.values["data"])
+            if (
+                restored.agent is not None
+                and restored.agent.status is AgentStatus.COMPLETED
+            ):
+                return restored
         result = self._graph.invoke(
-            {"data": AgentGraphState(run_id=context.run_id, query=query).model_dump()},
-            config={"configurable": {"thread_id": thread_id}},
+            {
+                "data": AgentGraphState(run_id=context.run_id, query=query).model_dump(
+                    mode="json"
+                )
+            },
+            config=config,
         )
         return AgentGraphState.model_validate(result["data"])
 
@@ -59,12 +73,20 @@ class LangGraphResearchRunner:
         graph.add_node("retrieve", self._retrieve)
         graph.add_node("assess", self._assess)
         graph.add_node("read_sources", self._read_sources)
+        graph.add_node("synthesize", self._synthesize)
+        graph.add_node("verify", self._verify)
+        graph.add_node("save", self._save)
+        graph.add_node("finish", self._finish)
         graph.add_edge(START, "initialize")
         graph.add_edge("initialize", "plan")
         graph.add_edge("plan", "retrieve")
         graph.add_edge("retrieve", "read_sources")
         graph.add_edge("read_sources", "assess")
-        graph.add_edge("assess", END)
+        graph.add_edge("assess", "synthesize")
+        graph.add_edge("synthesize", "verify")
+        graph.add_edge("verify", "save")
+        graph.add_edge("save", "finish")
+        graph.add_edge("finish", END)
         return graph
 
     def _state(self, value: ResearchGraphState) -> AgentGraphState:
@@ -73,7 +95,7 @@ class LangGraphResearchRunner:
     def _update(
         self, state: AgentGraphState, patch: dict[str, Any]
     ) -> ResearchGraphState:
-        return {"data": state.model_copy(update=patch).model_dump()}
+        return {"data": state.model_copy(update=patch).model_dump(mode="json")}
 
     def _context_or_raise(self) -> ToolContext:
         if self._context is None:
@@ -107,4 +129,26 @@ class LangGraphResearchRunner:
         state = self._state(value)
         return self._update(
             state, self._legacy._read_sources(state, self._context_or_raise())
+        )
+
+    def _synthesize(self, value: ResearchGraphState) -> ResearchGraphState:
+        state = self._state(value)
+        return self._update(
+            state, self._legacy._synthesize(state, self._context_or_raise())
+        )
+
+    def _verify(self, value: ResearchGraphState) -> ResearchGraphState:
+        state = self._state(value)
+        return self._update(
+            state, self._legacy._verify(state, self._context_or_raise())
+        )
+
+    def _save(self, value: ResearchGraphState) -> ResearchGraphState:
+        state = self._state(value)
+        return self._update(state, self._legacy._save(state, self._context_or_raise()))
+
+    def _finish(self, value: ResearchGraphState) -> ResearchGraphState:
+        state = self._state(value)
+        return self._update(
+            state, self._legacy._finish(state, self._context_or_raise())
         )
