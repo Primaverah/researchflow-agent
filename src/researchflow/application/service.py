@@ -50,3 +50,6 @@ class ResearchService:
         return SessionSnapshot(
             session_id=session_id, runs=self._store.list_session_runs(session_id)
         )
+
+    def list_sessions(self) -> list[str]:
+        return self._store.list_session_ids()

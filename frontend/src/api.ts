@@ -25,3 +25,32 @@ export async function getRun(runId: string): Promise<RunSnapshot> {
   }
   return (await response.json()) as RunSnapshot;
 }
+
+export async function listSessions(): Promise<string[]> {
+  const response = await fetch("/api/sessions");
+  if (!response.ok) {
+    throw new Error(`Unable to load sessions (${response.status})`);
+  }
+  return (await response.json()) as string[];
+}
+
+export async function startTurn(
+  sessionId: string,
+  message: string,
+): Promise<RunSnapshot> {
+  const response = await fetch(
+    `/api/sessions/${encodeURIComponent(sessionId)}/turns`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": crypto.randomUUID(),
+      },
+      body: JSON.stringify({ message }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Unable to start research (${response.status})`);
+  }
+  return (await response.json()) as RunSnapshot;
+}

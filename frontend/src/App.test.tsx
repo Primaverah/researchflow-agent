@@ -1,10 +1,11 @@
-import { render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
 
 describe("App", () => {
   afterEach(() => {
+    cleanup();
     vi.unstubAllGlobals();
   });
 
@@ -83,5 +84,78 @@ describe("App", () => {
 
     expect(await screen.findByText("运行状态：completed")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith("/api/runs/run-1");
+  });
+
+  it("lists sessions and starts a turn from the composer", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(["saved-session"])))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            run_id: "run-2",
+            session_id: "saved-session",
+            status: "completed",
+            evidence: {
+              candidates: [],
+              read_sources: [],
+              rejected_sources: [],
+            },
+          }),
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    expect(await screen.findByText("saved-session")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("研究问题"), {
+      target: { value: "tool calling" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByText("运行状态：completed")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/sessions/saved-session/turns",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("starts a new local session before sending its first turn", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(["saved-session"])))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            run_id: "run-3",
+            session_id: "new-session",
+            status: "completed",
+            evidence: {
+              candidates: [],
+              read_sources: [],
+              rejected_sources: [],
+            },
+          }),
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("crypto", { randomUUID: () => "new-session" });
+
+    render(<App />);
+    await screen.findByText("saved-session");
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+
+    expect(screen.getByText("当前会话：new-session")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("研究问题"), {
+      target: { value: "new question" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/sessions/new-session/turns",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });

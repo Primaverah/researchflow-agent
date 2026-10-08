@@ -18,6 +18,10 @@ def create_app(service: ResearchService) -> FastAPI:
     def health() -> dict[str, str]:
         return {"scope": "loopback"}
 
+    @app.get("/api/sessions")
+    def list_sessions() -> list[str]:
+        return service.list_sessions()
+
     @app.post("/api/sessions/{session_id}/turns", status_code=202)
     def start_turn(
         session_id: str,

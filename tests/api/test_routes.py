@@ -87,3 +87,26 @@ def test_unknown_run_is_not_found(tmp_path) -> None:
     response = client.get("/api/runs/missing")
 
     assert response.status_code == 404
+
+
+def test_sessions_route_lists_application_sessions(tmp_path) -> None:
+    service = ResearchService(
+        tmp_path / "checkpoints.sqlite3",
+        workflow=lambda message, _: AgentState(
+            run_id="workflow-run",
+            query=message,
+            status=AgentStatus.COMPLETED,
+            final_answer="verified answer",
+        ),
+    )
+    client = TestClient(create_app(service))
+    client.post(
+        "/api/sessions/demo/turns",
+        json={"message": "tool calling"},
+        headers={"Idempotency-Key": "request-1"},
+    )
+
+    response = client.get("/api/sessions")
+
+    assert response.status_code == 200
+    assert response.json() == ["demo"]
