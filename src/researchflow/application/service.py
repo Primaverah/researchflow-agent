@@ -1,6 +1,7 @@
 """Shared synchronous lifecycle service for research callers."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from inspect import Parameter, signature
 from pathlib import Path
 
 from researchflow.application.events import EventBroker
@@ -9,6 +10,7 @@ from researchflow.application.models import (
     RunSnapshot,
     RunStatus,
     SessionSnapshot,
+    SourceSnapshot,
     StartTurn,
 )
 from researchflow.application.run_store import SqliteRunStore
@@ -20,7 +22,7 @@ class ResearchService:
         self,
         database: Path,
         *,
-        workflow: Callable[[str, str], AgentState],
+        workflow: Callable[..., AgentState],
     ) -> None:
         self._store = SqliteRunStore(database)
         self._events = EventBroker(self._store)
@@ -41,28 +43,37 @@ class ResearchService:
                 update={"status": RunStatus.RUNNING, "last_event_id": started.event_id}
             )
         )
-        state = self._workflow(request.message, request.session_id)
+        state = self._run_workflow(request.message, request.session_id, running.run_id)
         status = (
             RunStatus.COMPLETED
             if state.final_answer is not None
             else RunStatus.INSUFFICIENT_EVIDENCE
         )
-        completed = self._events.publish(
-            run_id=running.run_id,
-            session_id=running.session_id,
-            event_type=(
-                "run_completed"
-                if status is RunStatus.COMPLETED
-                else "evidence_assessed"
-            ),
-            data={"status": status.value},
-        )
+        projected = self._store.get_run(running.run_id)
+        existing_events = self._events.replay(projected.run_id)
+        latest_event = existing_events[-1] if existing_events else None
+        if latest_event is not None and latest_event.type in {
+            "run_completed",
+            "run_failed",
+        }:
+            terminal_event_id = latest_event.event_id
+        else:
+            terminal_event_id = self._events.publish(
+                run_id=projected.run_id,
+                session_id=projected.session_id,
+                event_type=(
+                    "run_completed"
+                    if status is RunStatus.COMPLETED
+                    else "evidence_assessed"
+                ),
+                data={"status": status.value},
+            ).event_id
         return self._store.save(
-            running.model_copy(
+            projected.model_copy(
                 update={
                     "status": status,
                     "answer": state.final_answer,
-                    "last_event_id": completed.event_id,
+                    "last_event_id": terminal_event_id,
                 }
             )
         )
@@ -82,3 +93,105 @@ class ResearchService:
         self, run_id: str, *, after_event_id: int = 0
     ) -> list[EventEnvelope]:
         return self._events.replay(run_id, after_event_id=after_event_id)
+
+    def publish_event(
+        self,
+        run_id: str,
+        event_type: str,
+        data: Mapping[str, object] | None = None,
+    ) -> RunSnapshot:
+        """Persist a safe event and project its display-safe fields onto its run."""
+        snapshot = self._store.get_run(run_id)
+        event = self._events.publish(
+            run_id=run_id,
+            session_id=snapshot.session_id,
+            event_type=event_type,
+            data=data,
+        )
+        return self._store.save(self._project_event(snapshot, event))
+
+    def _run_workflow(self, message: str, session_id: str, run_id: str) -> AgentState:
+        if not self._workflow_accepts_events():
+            return self._workflow(message, session_id)
+
+        def publish(event_type: str, data: Mapping[str, object]) -> None:
+            self.publish_event(run_id, event_type, data)
+
+        return self._workflow(message, session_id, publish)
+
+    def _workflow_accepts_events(self) -> bool:
+        try:
+            parameters = tuple(signature(self._workflow).parameters.values())
+        except (TypeError, ValueError):
+            return False
+        positional = tuple(
+            parameter
+            for parameter in parameters
+            if parameter.kind
+            in {Parameter.POSITIONAL_ONLY, Parameter.POSITIONAL_OR_KEYWORD}
+        )
+        return len(positional) >= 3 or any(
+            parameter.kind is Parameter.VAR_POSITIONAL for parameter in parameters
+        )
+
+    @staticmethod
+    def _project_event(snapshot: RunSnapshot, event: EventEnvelope) -> RunSnapshot:
+        evidence = snapshot.evidence.model_copy(deep=True)
+        data = event.data
+        if event.type == "candidate_selected":
+            evidence.candidates = ResearchService._append_source(
+                evidence.candidates,
+                ResearchService._source_from_event(data, read=False),
+            )
+        elif event.type == "source_read":
+            evidence.read_sources = ResearchService._append_source(
+                evidence.read_sources,
+                ResearchService._source_from_event(data, read=True),
+            )
+        elif event.type == "source_rejected":
+            evidence.rejected_sources = ResearchService._append_source(
+                evidence.rejected_sources,
+                ResearchService._source_from_event(data, read=False),
+            )
+        update: dict[str, object] = {
+            "evidence": evidence,
+            "last_event_id": event.event_id,
+        }
+        if event.type == "evidence_assessed":
+            status = data.get("status")
+            gaps = data.get("gaps")
+            if isinstance(status, str):
+                update["evidence_status"] = status
+            if isinstance(gaps, list) and all(isinstance(item, str) for item in gaps):
+                update["evidence_gaps"] = gaps
+        if event.type == "generation_status":
+            mode = data.get("mode")
+            if isinstance(mode, str):
+                update["generation_mode"] = mode
+        return snapshot.model_copy(update=update)
+
+    @staticmethod
+    def _source_from_event(data: Mapping[str, object], *, read: bool) -> SourceSnapshot:
+        source_id = data.get("source_id")
+        title = data.get("title")
+        kind = data.get("kind")
+        reason = data.get("reason")
+        identifier = source_id if isinstance(source_id, str) else "unknown-source"
+        return SourceSnapshot(
+            source_id=identifier,
+            title=title if isinstance(title, str) else identifier,
+            url=identifier if identifier.startswith(("http://", "https://")) else "",
+            kind=kind if isinstance(kind, str) else "web",
+            read=read,
+            reason=reason if isinstance(reason, str) else None,
+        )
+
+    @staticmethod
+    def _append_source(
+        sources: list[SourceSnapshot], source: SourceSnapshot
+    ) -> list[SourceSnapshot]:
+        return (
+            [*sources, source]
+            if all(item.source_id != source.source_id for item in sources)
+            else sources
+        )

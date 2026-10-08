@@ -2,6 +2,7 @@
 
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -256,6 +257,7 @@ def _run_workflow(
     *,
     answer_target: str | None = None,
     answer_language: str = "",
+    event_sink: Callable[[str, dict[str, object]], None] | None = None,
 ) -> tuple[AgentState, ToolContext]:
     context = _create_context(documents_dir, output_dir)
     registry = ToolRegistry()
@@ -330,6 +332,7 @@ def _run_workflow(
                 context,
                 answer_target=answer_target,
                 answer_language=answer_language,
+                event_sink=event_sink,
             ),
             context,
         )
@@ -563,7 +566,11 @@ def run_agent(
         _validate_context_paths(documents_dir, output_dir)
         execution: dict[str, tuple[AgentState, ToolContext]] = {}
 
-        def workflow(message: str, _: str) -> AgentState:
+        def workflow(
+            message: str,
+            _: str,
+            event_sink: Callable[[str, dict[str, object]], None] | None = None,
+        ) -> AgentState:
             state, context = _run_workflow(
                 message,
                 documents_dir,
@@ -574,6 +581,7 @@ def run_agent(
                 tuple(allowed_domain or ()),
                 ctx.obj["llm_overrides"],
                 orchestrator,
+                event_sink=event_sink,
             )
             execution["result"] = (state, context)
             return state
@@ -640,7 +648,11 @@ def serve(
     _validate_context_paths(documents_dir, output_dir)
     from researchflow.api.server import create_local_app
 
-    def workflow(message: str, _: str) -> AgentState:
+    def workflow(
+        message: str,
+        _: str,
+        event_sink: Callable[[str, dict[str, object]], None] | None = None,
+    ) -> AgentState:
         state, _context = _run_workflow(
             message,
             documents_dir,
@@ -651,6 +663,7 @@ def serve(
             tuple(allowed_domain or ()),
             ctx.obj["llm_overrides"],
             "graph",
+            event_sink=event_sink,
         )
         return state
 

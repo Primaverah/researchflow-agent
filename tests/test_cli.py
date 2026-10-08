@@ -520,6 +520,31 @@ def test_graph_orchestrator_runs_offline(cli_paths) -> None:
     assert any((output / "traces").glob("*.jsonl"))
 
 
+def test_graph_run_projects_evidence_into_persisted_application_snapshot(
+    cli_paths,
+) -> None:
+    documents, output = cli_paths
+
+    result = invoke_run(documents, output, "--orchestrator", "graph")
+
+    assert result.exit_code == 0
+    with sqlite3.connect(output / "sessions" / "checkpoints.sqlite3") as database:
+        payload = database.execute("SELECT payload FROM researchflow_runs").fetchone()[
+            0
+        ]
+        event_types = [
+            json.loads(row[0])["type"]
+            for row in database.execute(
+                "SELECT payload FROM researchflow_events ORDER BY event_id"
+            )
+        ]
+    snapshot = json.loads(payload)
+    assert snapshot["evidence"]["candidates"][0]["source_id"] == "agent.md"
+    assert snapshot["evidence"]["read_sources"][0]["source_id"] == "agent.md"
+    assert "source_read" in event_types
+    assert event_types.count("run_completed") == 1
+
+
 def test_invalid_max_steps_does_not_start_interactive_prompt() -> None:
     result = runner.invoke(app, ["run", "--max-steps", "0"])
 
