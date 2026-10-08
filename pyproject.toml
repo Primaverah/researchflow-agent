@@ -24,6 +24,10 @@ embedding = [
 llm = [
     "openai>=1,<2",
 ]
+ui = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+]
 
 [project.scripts]
 researchflow = "researchflow.cli:app"
