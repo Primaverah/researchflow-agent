@@ -69,11 +69,18 @@ def create_app(service: ResearchService) -> FastAPI:
             )
 
         def event_stream():
-            for event in service.events_for_run(run_id, after_event_id=after_event_id):
+            for event in service.subscribe_to_events(
+                run_id, after_event_id=after_event_id
+            ):
+                if event is None:
+                    yield ": keepalive\n\n"
+                    continue
                 payload = json.dumps(
                     event.data, ensure_ascii=False, separators=(",", ":")
                 )
                 yield f"id: {event.event_id}\nevent: {event.type}\ndata: {payload}\n\n"
+                if event.type in {"run_completed", "run_failed"}:
+                    break
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 

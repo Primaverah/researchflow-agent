@@ -7,6 +7,7 @@ import {
   type RunSnapshot,
   type SourceSnapshot,
 } from "./api";
+import { useRunEvents } from "./useRunEvents";
 
 type AppProps = {
   run?: RunSnapshot;
@@ -35,6 +36,7 @@ export function App({ run, runId }: AppProps) {
   const [sessions, setSessions] = useState<string[]>([]);
   const [sessionId, setSessionId] = useState("");
   const [message, setMessage] = useState("");
+  const snapshot = loadedRun ?? run;
 
   useEffect(() => {
     if (!runId) {
@@ -51,6 +53,24 @@ export function App({ run, runId }: AppProps) {
       })
       .catch(() => setLoadError("无法读取会话列表"));
   }, []);
+
+  useRunEvents(
+    snapshot?.run_id,
+    () => {
+      if (snapshot) {
+        getRun(snapshot.run_id)
+          .then(setLoadedRun)
+          .catch(() => setLoadError("实时更新失败，正在使用轮询状态"));
+      }
+    },
+    () => {
+      if (snapshot) {
+        getRun(snapshot.run_id)
+          .then(setLoadedRun)
+          .catch(() => setLoadError("无法读取运行状态"));
+      }
+    },
+  );
 
   async function submitTurn() {
     const content = message.trim();
@@ -75,7 +95,6 @@ export function App({ run, runId }: AppProps) {
     setLoadError("");
   }
 
-  const snapshot = loadedRun ?? run;
   return (
     <main>
       <aside>

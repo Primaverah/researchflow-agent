@@ -19,6 +19,16 @@ export type RunSnapshot = {
   };
 };
 
+export type RunEvent = {
+  eventId: number;
+  type: string;
+  data: Record<string, unknown>;
+};
+
+export function connectRunEvents(runId: string): EventSource {
+  return new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
+}
+
 export async function getRun(runId: string): Promise<RunSnapshot> {
   const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
   if (!response.ok) {

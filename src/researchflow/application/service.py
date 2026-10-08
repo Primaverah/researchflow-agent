@@ -94,6 +94,9 @@ class ResearchService:
     ) -> list[EventEnvelope]:
         return self._events.replay(run_id, after_event_id=after_event_id)
 
+    def subscribe_to_events(self, run_id: str, *, after_event_id: int = 0):
+        return self._events.subscribe(run_id, after_event_id=after_event_id)
+
     def publish_event(
         self,
         run_id: str,

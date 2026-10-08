@@ -40,3 +40,26 @@ def test_event_broker_redacts_secret_like_event_values(tmp_path) -> None:
     )
 
     assert "sk-not-a-real-key" not in str(event.data)
+
+
+def test_event_subscription_replays_then_receives_new_events(tmp_path) -> None:
+    broker = EventBroker(SqliteRunStore(tmp_path / "checkpoints.sqlite3"))
+    broker.publish(
+        run_id="run-1",
+        session_id="session-1",
+        event_type="run_started",
+    )
+    subscription = broker.subscribe("run-1", after_event_id=0, keepalive_seconds=0.01)
+
+    assert next(subscription).type == "run_started"
+    broker.publish(
+        run_id="run-1",
+        session_id="session-1",
+        event_type="search_completed",
+        data={"candidate_count": 2},
+    )
+
+    event = next(subscription)
+    assert event is not None
+    assert event.type == "search_completed"
+    subscription.close()
