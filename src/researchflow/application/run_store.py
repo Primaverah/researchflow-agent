@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from researchflow.application.models import RunSnapshot, RunStatus
+from researchflow.application.models import EventEnvelope, RunSnapshot, RunStatus
 
 
 def _utc_now() -> datetime:
@@ -92,6 +92,36 @@ class SqliteRunStore:
                 ),
             )
         return updated
+
+    def append_event(self, event: EventEnvelope) -> EventEnvelope:
+        """Persist one event with the next sequence number for its run."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT COALESCE(MAX(event_id), 0) FROM researchflow_events "
+                "WHERE run_id = ?",
+                (event.run_id,),
+            ).fetchone()
+            persisted = event.model_copy(update={"event_id": int(row[0]) + 1})
+            connection.execute(
+                "INSERT INTO researchflow_events (run_id, event_id, payload) "
+                "VALUES (?, ?, ?)",
+                (
+                    persisted.run_id,
+                    persisted.event_id,
+                    persisted.model_dump_json(),
+                ),
+            )
+        return persisted
+
+    def list_events(self, run_id: str, *, after_event_id: int) -> list[EventEnvelope]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM researchflow_events "
+                "WHERE run_id = ? AND event_id > ? ORDER BY event_id",
+                (run_id, after_event_id),
+            ).fetchall()
+        return [EventEnvelope.model_validate(json.loads(row[0])) for row in rows]
 
     def _initialize(self) -> None:
         with self._connect() as connection:

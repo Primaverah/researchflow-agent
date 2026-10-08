@@ -6,6 +6,7 @@ patch application so the nodes can later be adapted to a graph runtime.
 """
 
 import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from enum import StrEnum
@@ -99,6 +100,9 @@ class AgentOrchestrator(Protocol):
         ...
 
 
+GraphEventSink = Callable[[str, dict[str, object]], None]
+
+
 class GraphAgentRunner:
     """Run the fixed research graph while retaining the old runner API."""
 
@@ -136,6 +140,7 @@ class GraphAgentRunner:
         *,
         answer_target: str | None = None,
         answer_language: str = "",
+        event_sink: GraphEventSink | None = None,
     ) -> AgentState:
         state = AgentGraphState(
             run_id=context.run_id,
@@ -156,12 +161,15 @@ class GraphAgentRunner:
                     }
                 )
             node = state.current_node
+            self._emit(event_sink, "graph_node_started", {"node": node.value})
             update = self._node_update(node, state, context)
+            previous = state
             state = state.model_copy(
                 update={**update, "node_steps": state.node_steps + 1}
             )
             next_node = self.route(state)
             self._record_graph(node, next_node, state, context)
+            self._publish_node_events(event_sink, node, previous, state, next_node)
             if next_node is None:
                 if state.agent is None:
                     raise RuntimeError("graph finished without agent state")
@@ -631,4 +639,104 @@ class GraphAgentRunner:
                     "generation_error_type": state.generation_error_type,
                 },
                 context,
+            )
+
+    @staticmethod
+    def _emit(
+        event_sink: GraphEventSink | None,
+        event_type: str,
+        data: dict[str, object],
+    ) -> None:
+        if event_sink is not None:
+            event_sink(event_type, data)
+
+    def _publish_node_events(
+        self,
+        event_sink: GraphEventSink | None,
+        node: GraphNode,
+        previous: AgentGraphState,
+        state: AgentGraphState,
+        next_node: GraphNode | None,
+    ) -> None:
+        self._emit(
+            event_sink,
+            "graph_node_finished",
+            {
+                "node": node.value,
+                "next_node": None if next_node is None else next_node.value,
+            },
+        )
+        if node is GraphNode.RETRIEVE:
+            self._emit(
+                event_sink,
+                "search_completed",
+                {"candidate_count": len(state.candidates)},
+            )
+            for candidate in state.candidates:
+                self._emit(
+                    event_sink,
+                    "candidate_selected",
+                    {
+                        "source_id": candidate.locator,
+                        "title": candidate.title,
+                        "kind": candidate.source_type,
+                    },
+                )
+        if node is GraphNode.READ_SOURCES:
+            for document in state.documents[len(previous.documents) :]:
+                self._emit(
+                    event_sink,
+                    "source_read",
+                    {
+                        "source_id": document.path,
+                        "title": document.title,
+                        "kind": "document",
+                        "content_length": len(document.content),
+                    },
+                )
+            for source in state.web_sources[len(previous.web_sources) :]:
+                self._emit(
+                    event_sink,
+                    "source_read",
+                    {
+                        "source_id": source.url,
+                        "title": source.title,
+                        "kind": "web",
+                        "content_length": len(source.content),
+                    },
+                )
+            for rejected in state.rejected_sources[len(previous.rejected_sources) :]:
+                source_id, separator, reason = rejected.rpartition(" — ")
+                self._emit(
+                    event_sink,
+                    "source_rejected",
+                    {
+                        "source_id": source_id if separator else rejected,
+                        "reason": reason if separator else "rejected",
+                    },
+                )
+        if node is GraphNode.ASSESS_EVIDENCE and state.evidence_status is not None:
+            self._emit(
+                event_sink,
+                "evidence_assessed",
+                {
+                    "status": state.evidence_status.value,
+                    "gaps": state.evidence_gaps,
+                },
+            )
+        if node is GraphNode.SYNTHESIZE:
+            self._emit(
+                event_sink,
+                "generation_status",
+                {"mode": state.generation_mode},
+            )
+        if node is GraphNode.FINISH:
+            self._emit(
+                event_sink,
+                "run_completed",
+                {
+                    "end_reason": None
+                    if state.end_reason is None
+                    else state.end_reason.value,
+                },
             )

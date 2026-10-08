@@ -137,6 +137,41 @@ def test_graph_reports_safe_summary_generation_status(tmp_path: Path) -> None:
     assert synthesis_event["generation_mode"] == "extractive"
 
 
+def test_graph_event_sink_emits_safe_source_metadata_not_body(tmp_path: Path) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(
+                call, output={"hits": [{"path": "evidence.md", "title": "Evidence"}]}
+            )
+        if call.tool_name == "read_document":
+            return make_result(
+                call,
+                output={
+                    "path": "evidence.md",
+                    "title": "Evidence",
+                    "content": "This is source-only content.",
+                    "char_count": 28,
+                },
+            )
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    events: list[tuple[str, dict[str, object]]] = []
+    GraphAgentRunner(
+        RulePlanner(), StateSelector(), ExtractiveSummarizer(), FakeExecutor(handler)
+    ).run(
+        "proof",
+        make_context(tmp_path),
+        event_sink=lambda event_type, data: events.append((event_type, data)),
+    )
+
+    source_event = next(
+        data for event_type, data in events if event_type == "source_read"
+    )
+    assert source_event["content_length"] == 28
+    assert "content" not in source_event
+    assert "This is source-only content." not in str(events)
+
+
 def test_graph_deduplicates_candidates_and_uses_only_successful_reads(
     tmp_path: Path,
 ) -> None:
