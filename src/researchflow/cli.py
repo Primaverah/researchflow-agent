@@ -16,6 +16,7 @@ from researchflow.agent import (
     AgentRunner,
     ExtractiveSummarizer,
     GraphAgentRunner,
+    LangGraphResearchRunner,
     LangGraphSessionRunner,
     LLMPlanner,
     LLMSelector,
@@ -225,7 +226,7 @@ def _session_runner(
             enable_web,
             allowed_domains,
             llm_overrides,
-            "graph",
+            "langgraph",
             answer_target=request.answer_target,
             answer_language=request.answer_language,
         )
@@ -253,11 +254,12 @@ def _run_workflow(
     enable_web: bool = False,
     allowed_domains: tuple[str, ...] = (),
     llm_overrides: dict[str, object] | None = None,
-    orchestrator: str = "loop",
+    orchestrator: str = "langgraph",
     *,
     answer_target: str | None = None,
     answer_language: str = "",
     event_sink: Callable[[str, dict[str, object]], None] | None = None,
+    thread_id: str | None = None,
 ) -> tuple[AgentState, ToolContext]:
     context = _create_context(documents_dir, output_dir)
     registry = ToolRegistry()
@@ -311,6 +313,25 @@ def _run_workflow(
             )
     executor = ToolExecutor(registry, JsonlTraceRecorder())
     runner: AgentOrchestrator
+    if orchestrator == "langgraph":
+        graph_state = LangGraphResearchRunner(
+            _session_database(output_dir),
+            planner,
+            selector,
+            summarizer,
+            executor,
+            max_steps=max_steps,
+        ).run(
+            query,
+            context,
+            thread_id=thread_id or context.run_id,
+            answer_target=answer_target,
+            answer_language=answer_language,
+            event_sink=event_sink,
+        )
+        if graph_state.agent is None:
+            raise RuntimeError("LangGraph research finished without an agent state")
+        return graph_state.agent, context
     if orchestrator == "graph":
         runner = GraphAgentRunner(
             planner,
@@ -536,8 +557,11 @@ def run_agent(
     ] = "rule",
     orchestrator: Annotated[
         str,
-        typer.Option("--orchestrator", help="Orchestrator: loop (default) or graph."),
-    ] = "loop",
+        typer.Option(
+            "--orchestrator",
+            help="Orchestrator: langgraph (default), graph, or loop.",
+        ),
+    ] = "langgraph",
     enable_web: Annotated[
         bool,
         typer.Option("--enable-web", help="Enable optional Tavily web sources."),
@@ -559,8 +583,8 @@ def run_agent(
         _input_error("--max-steps 必须大于或等于 1")
     if agent_mode not in {"rule", "llm"}:
         _input_error("--agent-mode 必须为 rule 或 llm")
-    if orchestrator not in {"loop", "graph"}:
-        _input_error("--orchestrator 必须为 loop 或 graph")
+    if orchestrator not in {"loop", "graph", "langgraph"}:
+        _input_error("--orchestrator 必须为 loop、graph 或 langgraph")
     resolved_query = _resolve_query(query)
     try:
         _validate_context_paths(documents_dir, output_dir)
@@ -568,7 +592,7 @@ def run_agent(
 
         def workflow(
             message: str,
-            _: str,
+            session_id: str,
             event_sink: Callable[[str, dict[str, object]], None] | None = None,
         ) -> AgentState:
             state, context = _run_workflow(
@@ -582,6 +606,7 @@ def run_agent(
                 ctx.obj["llm_overrides"],
                 orchestrator,
                 event_sink=event_sink,
+                thread_id=session_id,
             )
             execution["result"] = (state, context)
             return state
@@ -650,7 +675,7 @@ def serve(
 
     def workflow(
         message: str,
-        _: str,
+        session_id: str,
         event_sink: Callable[[str, dict[str, object]], None] | None = None,
     ) -> AgentState:
         state, _context = _run_workflow(
@@ -662,8 +687,9 @@ def serve(
             enable_web,
             tuple(allowed_domain or ()),
             ctx.obj["llm_overrides"],
-            "graph",
+            "langgraph",
             event_sink=event_sink,
+            thread_id=session_id,
         )
         return state
 

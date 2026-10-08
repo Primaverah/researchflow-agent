@@ -145,6 +145,30 @@ def test_event_aware_workflow_projects_evidence_while_it_runs(tmp_path) -> None:
     assert snapshot.evidence.rejected_sources[0].reason == "low_relevance"
 
 
+def test_insufficient_evidence_is_not_persisted_as_completed(tmp_path) -> None:
+    def workflow(message: str, _session_id: str, publish) -> AgentState:
+        publish(
+            "evidence_assessed",
+            {"status": "insufficient", "gaps": ["no_successful_relevant_source"]},
+        )
+        return AgentState(
+            run_id="workflow-run",
+            query=message,
+            status=AgentStatus.COMPLETED,
+            final_answer="没有成功读取任何候选来源。",
+        )
+
+    service = ResearchService(tmp_path / "checkpoints.sqlite3", workflow=workflow)
+
+    snapshot = service.start_turn(
+        StartTurn(session_id="one", message="question", idempotency_key="key-1")
+    )
+
+    assert snapshot.status is RunStatus.INSUFFICIENT_EVIDENCE
+    assert snapshot.answer == "没有成功读取任何候选来源。"
+    assert service.events_for_run(snapshot.run_id)[-1].type == "run_completed"
+
+
 def test_session_runner_persists_interrupt_then_resumes_once(tmp_path) -> None:
     class FakeSessionRunner:
         def __init__(self) -> None:

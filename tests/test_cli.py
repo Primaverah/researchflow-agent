@@ -520,6 +520,25 @@ def test_graph_orchestrator_runs_offline(cli_paths) -> None:
     assert any((output / "traces").glob("*.jsonl"))
 
 
+def test_default_run_uses_checkpointed_langgraph_research(cli_paths) -> None:
+    documents, output = cli_paths
+
+    result = invoke_run(documents, output)
+
+    assert result.exit_code == 0
+    with sqlite3.connect(output / "sessions" / "checkpoints.sqlite3") as database:
+        checkpoint_count = database.execute(
+            "SELECT COUNT(*) FROM checkpoints"
+        ).fetchone()[0]
+        payload = database.execute("SELECT payload FROM researchflow_runs").fetchone()[
+            0
+        ]
+    assert checkpoint_count > 0
+    snapshot = json.loads(payload)
+    assert snapshot["evidence"]["candidates"][0]["source_id"] == "agent.md"
+    assert snapshot["evidence"]["read_sources"][0]["source_id"] == "agent.md"
+
+
 def test_graph_run_projects_evidence_into_persisted_application_snapshot(
     cli_paths,
 ) -> None:

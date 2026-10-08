@@ -49,12 +49,12 @@ class ResearchService:
             )
         )
         state = self._run_workflow(request.message, request.session_id, running.run_id)
-        status = (
-            RunStatus.COMPLETED
-            if state.final_answer is not None
-            else RunStatus.INSUFFICIENT_EVIDENCE
-        )
         projected = self._store.get_run(running.run_id)
+        status = (
+            RunStatus.INSUFFICIENT_EVIDENCE
+            if projected.evidence_status == "insufficient" or state.final_answer is None
+            else RunStatus.COMPLETED
+        )
         existing_events = self._events.replay(projected.run_id)
         latest_event = existing_events[-1] if existing_events else None
         if latest_event is not None and latest_event.type in {
@@ -66,11 +66,7 @@ class ResearchService:
             terminal_event_id = self._events.publish(
                 run_id=projected.run_id,
                 session_id=projected.session_id,
-                event_type=(
-                    "run_completed"
-                    if status is RunStatus.COMPLETED
-                    else "evidence_assessed"
-                ),
+                event_type="run_completed",
                 data={"status": status.value},
             ).event_id
         return self._store.save(
