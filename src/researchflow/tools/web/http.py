@@ -19,6 +19,43 @@ class WebFetchError(RuntimeError):
         self.error_type = error_type
 
 
+_MOJIBAKE_PAIR = re.compile(r"[\u00c0-\u00ff][\u0080-\u00bf]")
+_DEFAULT_TITLES = {"", "untitled", "untitled page", "new document"}
+
+
+def assess_text_quality(
+    title: str, content: str, *, expected_language: str = ""
+) -> str | None:
+    """Return a stable rejection code when extracted text is not readable evidence.
+
+    Decoding can technically succeed with a wrong charset (notably UTF-8 bytes
+    interpreted as Latin-1).  This deliberately runs after decoding so it does
+    not replace the normal GB18030/GBK decoding path.
+    """
+    del expected_language  # Reserved for caller-provided language hints.
+    text = f"{title}\n{content}".strip()
+    if not text:
+        return "web_low_quality_content"
+
+    replacement_count = text.count("\ufffd")
+    control_count = sum(
+        1 for character in text if ord(character) < 32 and character not in "\n\t\r"
+    )
+    c1_control_count = sum(1 for character in text if 0x80 <= ord(character) <= 0x9F)
+    mojibake_pairs = len(_MOJIBAKE_PAIR.findall(text))
+    if (
+        replacement_count
+        or control_count
+        or c1_control_count >= 2
+        or mojibake_pairs >= 2
+    ):
+        return "web_garbled_content"
+
+    if title.strip().casefold() in _DEFAULT_TITLES and len(content.strip()) < 16:
+        return "web_low_quality_content"
+    return None
+
+
 class _RejectRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args: object, **kwargs: object) -> object:
         raise WebFetchError("web redirects are not supported", "web_redirect_rejected")
@@ -190,7 +227,10 @@ class SafeHttpClient:
             raise WebFetchError(
                 "web page could not be read", "web_content_decode"
             ) from exc
-        if not parser.content:
+        quality_error = assess_text_quality(parser.title, parser.content)
+        if quality_error == "web_garbled_content":
+            raise WebFetchError("web page contains garbled text", quality_error)
+        if quality_error or not parser.content:
             raise WebFetchError(
                 "web page has no primary readable content", "web_low_quality_content"
             )
