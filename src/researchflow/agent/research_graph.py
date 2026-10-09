@@ -93,6 +93,7 @@ class LangGraphResearchRunner:
                     query=query,
                     answer_target=answer_target or query,
                     answer_language=answer_language,
+                    read_limit=self._legacy._read_limit,
                 ).model_dump(mode="json")
             },
             config=config,
@@ -273,7 +274,7 @@ class LangGraphResearchRunner:
                 GraphNode.SYNTHESIZE
                 if state.evidence_status is EvidenceStatus.SUFFICIENT
                 else GraphNode.READ_SOURCES
-                if len(state.attempted_candidates) < len(state.candidates)
+                if self._legacy._has_read_budget(state)
                 else GraphNode.SYNTHESIZE
                 if state.candidates
                 else GraphNode.REPLAN
@@ -378,7 +379,7 @@ class LangGraphResearchRunner:
             return "finish"
         if state.evidence_status is EvidenceStatus.SUFFICIENT:
             return "synthesize"
-        if len(state.attempted_candidates) < len(state.candidates):
+        if self._legacy._has_read_budget(state):
             return "read_sources"
         if state.candidates:
             return "synthesize"

@@ -430,7 +430,7 @@ def test_all_web_reads_failed_returns_candidate_links_and_failure_reasons(
     assert "expected failure" in state.final_answer
 
 
-def test_read_failure_tries_remaining_candidates_before_reporting_no_results(
+def test_read_limit_bounds_total_source_reads_before_insufficient_report(
     tmp_path: Path,
 ) -> None:
     def handler(call: ToolCall) -> ToolResult:
@@ -471,8 +471,10 @@ def test_read_failure_tries_remaining_candidates_before_reporting_no_results(
         max_steps=12,
     ).run("成龙是谁", make_context(tmp_path))
 
-    assert any(call.arguments.get("url", "").endswith("/5") for call in executor.calls)
-    assert "https://example.com/5" in state.final_answer
+    fetched = [call for call in executor.calls if call.tool_name == "fetch_url"]
+    assert len(fetched) == 5
+    assert not any(call.arguments["url"].endswith("/5") for call in fetched)
+    assert "没有成功读取任何候选来源" in state.final_answer
 
 
 def test_current_complete_list_does_not_summarize_one_non_official_source(
@@ -546,4 +548,6 @@ def test_current_complete_list_accepts_one_configured_official_complete_source(
     assessment = runner._assess_evidence(state, make_context(tmp_path))
 
     assert assessment["evidence_status"] is EvidenceStatus.SUFFICIENT
-    assert assessment["official_complete_source_id"] == "https://official.example/winners"
+    assert (
+        assessment["official_complete_source_id"] == "https://official.example/winners"
+    )

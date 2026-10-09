@@ -98,3 +98,33 @@ def test_console_api_never_marks_empty_evidence_as_completed(tmp_path) -> None:
     assert response.json()["status"] == RunStatus.INSUFFICIENT_EVIDENCE.value
     assert response.json()["evidence"]["read_sources"] == []
     assert response.json()["evidence_status"] == "insufficient"
+    assert response.json()["generation_mode"] != "llm_grounded"
+
+
+def test_session_snapshot_exposes_multiple_persisted_turns(tmp_path) -> None:
+    service = ResearchService(
+        tmp_path / "checkpoints.sqlite3",
+        workflow=lambda message, _session_id: AgentState(
+            run_id=f"run-{message}",
+            query=message,
+            status=AgentStatus.COMPLETED,
+            final_answer=f"answer for {message}",
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    for key, message in (("one", "first"), ("two", "second")):
+        response = client.post(
+            "/api/sessions/history/turns",
+            json={"message": message},
+            headers={"Idempotency-Key": key},
+        )
+        assert response.status_code == 202
+
+    snapshot = client.get("/api/sessions/history")
+
+    assert snapshot.status_code == 200
+    assert [run["question"] for run in snapshot.json()["runs"]] == [
+        "first",
+        "second",
+    ]

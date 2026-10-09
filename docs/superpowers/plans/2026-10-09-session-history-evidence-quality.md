@@ -48,6 +48,7 @@ def test_fetch_rejects_mojibake_content_after_successful_decode():
         SafeHttpClient(opener=garbled_opener, resolver=public_resolver).fetch(URL)
     assert error.value.error_type == "web_garbled_content"
 
+
 def test_fetch_accepts_readable_gb18030_content():
     page = SafeHttpClient(opener=gb18030_opener, resolver=public_resolver).fetch(URL)
     assert "诺贝尔奖" in page.content
@@ -100,15 +101,21 @@ def test_current_complete_list_requires_two_distinct_sources():
     assert assessment.sufficient is False
     assert assessment.required_source_count == 2
 
+
 def test_configured_official_complete_list_allows_one_source():
     assessment = evaluate_evidence_policy(
-        "今年诺贝尔奖获奖者名单", [complete_source],
+        "今年诺贝尔奖获奖者名单",
+        [complete_source],
         official_domains=("official.example",),
     )
     assert assessment.sufficient is True
 
+
 def test_same_url_never_counts_twice():
-    assert evaluate_evidence_policy("今年获奖名单", [source, duplicate]).sufficient is False
+    assert (
+        evaluate_evidence_policy("今年获奖名单", [source, duplicate]).sufficient
+        is False
+    )
 ```
 
 - [ ] **Step 2: 运行策略测试确认失败**

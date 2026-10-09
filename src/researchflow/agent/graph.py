@@ -92,6 +92,7 @@ class AgentGraphState(DomainModel):
     generation_error_type: str | None = None
     replans: int = 0
     max_replans: int = 1
+    read_limit: int = 5
     replan_reason: str | None = None
     node_steps: int = 0
     end_reason: GraphEndReason | None = None
@@ -155,6 +156,7 @@ class GraphAgentRunner:
             answer_target=answer_target or query,
             answer_language=answer_language,
             max_replans=self._max_replans,
+            read_limit=self._read_limit,
         )
         while True:
             if (
@@ -196,7 +198,7 @@ class GraphAgentRunner:
         if node is GraphNode.ASSESS_EVIDENCE:
             if state.evidence_status is EvidenceStatus.SUFFICIENT:
                 return GraphNode.SYNTHESIZE
-            if len(state.attempted_candidates) < len(state.candidates):
+            if GraphAgentRunner._has_read_budget(state):
                 return GraphNode.READ_SOURCES
             if state.candidates:
                 return GraphNode.SYNTHESIZE
@@ -301,11 +303,12 @@ class GraphAgentRunner:
     ) -> dict[str, Any]:
         calls = []
         attempted = set(state.attempted_candidates)
+        remaining_budget = max(0, self._read_limit - len(state.attempted_candidates))
         unread = [
             candidate
             for candidate in state.candidates
             if candidate.locator not in attempted
-        ][: self._read_limit]
+        ][:remaining_budget]
         for candidate in unread:
             if candidate.source_type == "local":
                 calls.append(("read_document", {"path": candidate.locator}))
@@ -358,6 +361,12 @@ class GraphAgentRunner:
                 *(candidate.locator for candidate in unread),
             ],
         }
+
+    @staticmethod
+    def _has_read_budget(state: AgentGraphState) -> bool:
+        return len(state.attempted_candidates) < state.read_limit and len(
+            state.attempted_candidates
+        ) < len(state.candidates)
 
     def _synthesize(
         self, state: AgentGraphState, context: ToolContext

@@ -70,7 +70,10 @@ def test_fetch_decodes_gbk_header_and_meta_content() -> None:
 
 
 def test_fetch_rejects_mojibake_content_after_successful_decode() -> None:
-    html = "<html><title>诺贝尔奖名单</title><body>今年诺贝尔奖获奖者名单已经公布。</body></html>"
+    html = (
+        "<html><title>诺贝尔奖名单</title>"
+        "<body>今年诺贝尔奖获奖者名单已经公布。</body></html>"
+    )
     client = SafeHttpClient(
         opener=lambda url, timeout: FakeResponse(
             html.encode("utf-8"), "text/html", url, "iso-8859-1"
@@ -85,7 +88,10 @@ def test_fetch_rejects_mojibake_content_after_successful_decode() -> None:
 
 
 def test_fetch_accepts_readable_gb18030_content() -> None:
-    html = "<html><title>诺贝尔奖名单</title><body>今年诺贝尔奖获奖者名单已经公布。</body></html>"
+    html = (
+        "<html><title>诺贝尔奖名单</title>"
+        "<body>今年诺贝尔奖获奖者名单已经公布。</body></html>"
+    )
     client = SafeHttpClient(
         opener=lambda url, timeout: FakeResponse(
             html.encode("gb18030"), "text/html", url

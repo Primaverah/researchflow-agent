@@ -35,6 +35,15 @@ npm --prefix frontend ci
 `--extra llm` 与 `--extra ui` 允许使用可选的 LLM 和本地 API；纯离线命令只需
 `uv sync --frozen`。
 
+若运行“今年/最新 + 获奖名单/完整列表”类问题，默认至少需要两个不同的已读取正文来源。
+只有显式配置的 HTTPS 官方完整名单页可使用单来源例外：
+
+```toml
+# researchflow.toml
+[web]
+official_domains = ["example-official.org"]
+```
+
 ## 命令行快速开始
 
 ```powershell
