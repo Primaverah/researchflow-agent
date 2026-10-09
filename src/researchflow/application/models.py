@@ -123,6 +123,8 @@ class RunSnapshot(DomainModel):
     official_complete_source_id: str | None = None
     answer: str | None = None
     end_reason: str | None = None
+    node_steps: int | None = None
+    max_steps: int | None = None
     generation_mode: str | None = None
     report_path: str | None = None
     interrupt_prompt: str | None = None

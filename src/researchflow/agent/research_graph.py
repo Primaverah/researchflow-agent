@@ -94,6 +94,8 @@ class LangGraphResearchRunner:
                     answer_target=answer_target or query,
                     answer_language=answer_language,
                     read_limit=self._legacy._read_limit,
+                    max_replans=self._legacy._max_replans,
+                    max_steps=self._max_steps,
                 ).model_dump(mode="json")
             },
             config=config,

@@ -6,6 +6,7 @@ from researchflow.agent.session import (
     LangGraphSessionRunner,
     SessionCatalog,
     SessionResearchRequest,
+    SessionResearchResult,
 )
 
 
@@ -17,6 +18,22 @@ def test_catalog_exact_delete_and_session_isolation(tmp_path: Path) -> None:
     assert [item.session_id for item in catalog.list()] == ["one", "one-extra"]
     assert catalog.delete("one") is True
     assert [item.session_id for item in catalog.list()] == ["one-extra"]
+
+
+def test_research_result_preserves_graph_budget_terminal_metadata() -> None:
+    result = SessionResearchResult.from_events(
+        "Agent 已达到最大步骤限制，研究流程已停止。",
+        [
+            (
+                "run_completed",
+                {"end_reason": "max_steps", "node_steps": 1, "max_steps": 1},
+            )
+        ],
+    )
+
+    assert result.end_reason == "max_steps"
+    assert result.node_steps == 1
+    assert result.max_steps == 1
 
 
 def test_context_is_preserved_and_history_is_compacted(tmp_path: Path) -> None:

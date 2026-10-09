@@ -172,6 +172,28 @@ def test_graph_event_sink_emits_safe_source_metadata_not_body(tmp_path: Path) ->
     assert "This is source-only content." not in str(events)
 
 
+def test_graph_completion_event_includes_budget_diagnostics(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    GraphAgentRunner(
+        RulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        FakeExecutor(lambda call: make_result(call, output={"hits": []})),
+        max_steps=2,
+    ).run(
+        "limit",
+        make_context(tmp_path),
+        event_sink=lambda event_type, data: events.append((event_type, data)),
+    )
+
+    completed = next(
+        data for event_type, data in events if event_type == "run_completed"
+    )
+    assert completed["end_reason"] == "max_steps"
+    assert completed["node_steps"] == 3
+    assert completed["max_steps"] == 2
+
+
 def test_graph_deduplicates_candidates_and_uses_only_successful_reads(
     tmp_path: Path,
 ) -> None:

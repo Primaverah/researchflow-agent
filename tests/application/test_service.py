@@ -318,6 +318,37 @@ def test_session_result_projects_verified_evidence_into_completed_run(tmp_path) 
     )
 
 
+def test_session_max_steps_terminal_result_is_not_completed(tmp_path) -> None:
+    class FakeSessionRunner:
+        def chat(self, _message: str, *, session_id: str) -> ChatResult:
+            assert session_id == "budget"
+            return ChatResult(
+                response="Agent 已达到最大步骤限制，研究流程已停止。",
+                research_result=SessionResearchResult(
+                    response="Agent 已达到最大步骤限制，研究流程已停止。",
+                    evidence_status="sufficient",
+                    end_reason="max_steps",
+                    node_steps=1,
+                    max_steps=1,
+                ),
+            )
+
+    snapshot = ResearchService(
+        tmp_path / "checkpoints.sqlite3",
+        workflow=lambda message, _: AgentState(
+            run_id="unused", query=message, status=AgentStatus.COMPLETED
+        ),
+        session_runner=FakeSessionRunner(),
+    ).start_turn(
+        StartTurn(session_id="budget", message="问题", idempotency_key="budget-key")
+    )
+
+    assert snapshot.status is RunStatus.FAILED
+    assert snapshot.end_reason == "max_steps"
+    assert snapshot.node_steps == 1
+    assert snapshot.max_steps == 1
+
+
 def test_rebuilt_runner_resumes_waiting_run_with_original_session_id(tmp_path) -> None:
     database = tmp_path / "checkpoints.sqlite3"
     first_runner = LangGraphSessionRunner(database, research=lambda _query: "unused")

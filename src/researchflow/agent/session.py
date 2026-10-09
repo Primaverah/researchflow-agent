@@ -135,6 +135,9 @@ class SessionResearchResult(DomainModel):
     required_source_count: int = 0
     official_complete_source_id: str | None = None
     generation_mode: str | None = None
+    end_reason: str | None = None
+    node_steps: int | None = None
+    max_steps: int | None = None
 
     @classmethod
     def from_events(
@@ -147,6 +150,7 @@ class SessionResearchResult(DomainModel):
         rejected_sources: list[SessionSource] = []
         assessment: dict[str, object] = {}
         generation_mode: str | None = None
+        completion: dict[str, object] = {}
         for event_type, data in events:
             if event_type == "candidate_selected":
                 cls._append_event_source(candidates, data, read=False)
@@ -159,6 +163,8 @@ class SessionResearchResult(DomainModel):
             elif event_type == "generation_status":
                 mode = data.get("mode")
                 generation_mode = mode if isinstance(mode, str) else generation_mode
+            elif event_type == "run_completed":
+                completion = dict(data)
         status = assessment.get("status")
         gaps = assessment.get("gaps")
         policy = assessment.get("policy")
@@ -184,6 +190,13 @@ class SessionResearchResult(DomainModel):
                 else None
             ),
             generation_mode=generation_mode,
+            end_reason=(
+                completion["end_reason"]
+                if isinstance(completion.get("end_reason"), str)
+                else None
+            ),
+            node_steps=cls._event_optional_count(completion, "node_steps"),
+            max_steps=cls._event_optional_count(completion, "max_steps"),
         )
 
     @staticmethod
@@ -215,6 +228,11 @@ class SessionResearchResult(DomainModel):
     def _event_count(data: Mapping[str, object], key: str) -> int:
         value = data.get(key)
         return value if isinstance(value, int) and value >= 0 else 0
+
+    @staticmethod
+    def _event_optional_count(data: Mapping[str, object], key: str) -> int | None:
+        value = data.get(key)
+        return value if isinstance(value, int) and value >= 0 else None
 
 
 class SessionResearchRequest(DomainModel):

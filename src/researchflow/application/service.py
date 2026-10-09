@@ -55,7 +55,9 @@ class ResearchService:
         state = self._run_workflow(request.message, request.session_id, running.run_id)
         projected = self._store.get_run(running.run_id)
         status = (
-            RunStatus.INSUFFICIENT_EVIDENCE
+            RunStatus.FAILED
+            if projected.end_reason == "max_steps"
+            else RunStatus.INSUFFICIENT_EVIDENCE
             if projected.evidence_status == "insufficient" or state.final_answer is None
             else RunStatus.COMPLETED
         )
@@ -124,7 +126,9 @@ class ResearchService:
     ) -> RunSnapshot:
         research = result.research_result
         status = (
-            RunStatus.INSUFFICIENT_EVIDENCE
+            RunStatus.FAILED
+            if research is not None and research.end_reason == "max_steps"
+            else RunStatus.INSUFFICIENT_EVIDENCE
             if research is not None and research.evidence_status == "insufficient"
             else RunStatus.COMPLETED
         )
@@ -156,6 +160,9 @@ class ResearchService:
             "required_source_count": research.required_source_count,
             "official_complete_source_id": research.official_complete_source_id,
             "generation_mode": research.generation_mode,
+            "end_reason": research.end_reason,
+            "node_steps": research.node_steps,
+            "max_steps": research.max_steps,
         }
 
     def get_run(self, run_id: str) -> RunSnapshot:
@@ -261,6 +268,14 @@ class ResearchService:
             mode = data.get("mode")
             if isinstance(mode, str):
                 update["generation_mode"] = mode
+        if event.type == "run_completed":
+            end_reason = data.get("end_reason")
+            if isinstance(end_reason, str):
+                update["end_reason"] = end_reason
+            for field in ("node_steps", "max_steps"):
+                value = data.get(field)
+                if isinstance(value, int) and value >= 0:
+                    update[field] = value
         return snapshot.model_copy(update=update)
 
     @staticmethod

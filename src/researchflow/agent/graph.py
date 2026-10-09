@@ -95,6 +95,7 @@ class AgentGraphState(DomainModel):
     read_limit: int = 5
     replan_reason: str | None = None
     node_steps: int = 0
+    max_steps: int = 10
     end_reason: GraphEndReason | None = None
 
 
@@ -157,6 +158,7 @@ class GraphAgentRunner:
             answer_language=answer_language,
             max_replans=self._max_replans,
             read_limit=self._read_limit,
+            max_steps=self._max_steps,
         )
         while True:
             if (
@@ -767,5 +769,7 @@ class GraphAgentRunner:
                     "end_reason": None
                     if state.end_reason is None
                     else state.end_reason.value,
+                    "node_steps": state.node_steps,
+                    "max_steps": state.max_steps,
                 },
             )

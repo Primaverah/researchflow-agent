@@ -213,6 +213,21 @@ def _graph_options() -> dict[str, object]:
     return options
 
 
+def _resolved_max_steps(override: int | None = None) -> int:
+    """Resolve a graph-node budget that leaves room for configured replans."""
+    if override is not None:
+        return override
+    config = load_project_config()
+    graph = config.get("graph", {})
+    max_replans = graph.get("max_replans", 1) if isinstance(graph, dict) else 1
+    if not isinstance(max_replans, int) or max_replans < 0:
+        max_replans = 1
+    minimum = 10 + (3 * max_replans)
+    agent = config.get("agent", {})
+    configured = agent.get("max_steps") if isinstance(agent, dict) else None
+    return max(configured, minimum) if isinstance(configured, int) else minimum
+
+
 def _session_database(output_dir: Path) -> Path:
     return output_dir / "sessions" / "checkpoints.sqlite3"
 
@@ -236,7 +251,7 @@ def _session_runner(
             request.standalone_query,
             documents_dir,
             output_dir,
-            10,
+            _resolved_max_steps(),
             agent_mode,
             enable_web,
             allowed_domains,
@@ -567,9 +582,9 @@ def run_agent(
         typer.Option("--output-dir", help="Directory for notes and traces."),
     ] = Path("output"),
     max_steps: Annotated[
-        int,
+        int | None,
         typer.Option("--max-steps", help="Maximum number of agent actions."),
-    ] = 10,
+    ] = None,
     agent_mode: Annotated[
         str,
         typer.Option("--agent-mode", help="Agent mode: rule (default) or llm."),
@@ -598,13 +613,14 @@ def run_agent(
     ] = False,
 ) -> None:
     """Run one bounded local research workflow."""
-    if max_steps < 1:
+    if max_steps is not None and max_steps < 1:
         _input_error("--max-steps 必须大于或等于 1")
     if agent_mode not in {"rule", "llm"}:
         _input_error("--agent-mode 必须为 rule 或 llm")
     if orchestrator not in {"loop", "graph", "langgraph"}:
         _input_error("--orchestrator 必须为 loop、graph 或 langgraph")
     resolved_query = _resolve_query(query)
+    resolved_max_steps = _resolved_max_steps(max_steps)
     try:
         _validate_context_paths(documents_dir, output_dir)
         execution: dict[str, tuple[AgentState, ToolContext]] = {}
@@ -618,7 +634,7 @@ def run_agent(
                 message,
                 documents_dir,
                 output_dir,
-                max_steps,
+                resolved_max_steps,
                 agent_mode,
                 enable_web,
                 tuple(allowed_domain or ()),
@@ -701,7 +717,7 @@ def serve(
             message,
             documents_dir,
             output_dir,
-            10,
+            _resolved_max_steps(),
             agent_mode,
             enable_web,
             tuple(allowed_domain or ()),
