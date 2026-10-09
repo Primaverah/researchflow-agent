@@ -1,0 +1,11 @@
+:root { font-family: system-ui, sans-serif; color: #172033; background: #f5f7fb; }
+body { margin: 0; }
+.app-shell { display: grid; grid-template-columns: minmax(13rem, .8fr) minmax(24rem, 2fr) minmax(15rem, 1fr); gap: 1rem; padding: 1rem; }
+.panel, .report-panel { background: white; border: 1px solid #dbe2ef; border-radius: .75rem; padding: 1rem; min-width: 0; }
+.history { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
+.history .selected { font-weight: 700; border-color: #2563eb; }
+button, textarea { font: inherit; }
+textarea { display: block; width: 100%; min-height: 5rem; margin: 1rem 0 .5rem; box-sizing: border-box; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.evidence-panel a { overflow-wrap: anywhere; }
+@media (max-width: 900px) { .app-shell { grid-template-columns: 1fr; } }

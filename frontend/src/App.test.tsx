@@ -59,8 +59,10 @@ describe("App", () => {
     expect(screen.getByText("仅搜索摘要")).toBeInTheDocument();
     expect(screen.getByText("已读正文")).toBeInTheDocument();
     expect(
-      screen.getByText("拒绝来源：web_low_quality_content"),
-    ).toBeInTheDocument();
+      screen.getAllByText(
+        (_, element) => element?.textContent === "拒绝来源：web_low_quality_content",
+      ),
+    ).not.toHaveLength(0);
   });
 
   it("renders a final answer as plain text instead of source HTML", () => {
@@ -173,6 +175,90 @@ describe("App", () => {
       2,
       "/api/sessions/new-session/turns",
       expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("loads the newest persisted run when a saved session is selected", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(["demo"])))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            session_id: "demo",
+            runs: [
+              {
+                run_id: "first",
+                session_id: "demo",
+                question: "第一轮问题",
+                status: "completed",
+                answer: "第一轮回答",
+                evidence: { candidates: [], read_sources: [], rejected_sources: [] },
+              },
+              {
+                run_id: "second",
+                session_id: "demo",
+                question: "第二轮问题",
+                status: "completed",
+                answer: "第二轮回答",
+                evidence: { candidates: [], read_sources: [], rejected_sources: [] },
+              },
+            ],
+          }),
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "demo" }));
+
+    expect(
+      await screen.findByRole("button", { name: "第二轮问题" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("第二轮回答")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/sessions/demo");
+  });
+
+  it("switches a history item without posting another turn", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(["demo"])))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            session_id: "demo",
+            runs: [
+              {
+                run_id: "first",
+                session_id: "demo",
+                question: "第一轮问题",
+                status: "completed",
+                answer: "第一轮回答",
+                evidence: { candidates: [], read_sources: [], rejected_sources: [] },
+              },
+              {
+                run_id: "second",
+                session_id: "demo",
+                question: "第二轮问题",
+                status: "completed",
+                answer: "第二轮回答",
+                evidence: { candidates: [], read_sources: [], rejected_sources: [] },
+              },
+            ],
+          }),
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "demo" }));
+    await screen.findByText("第二轮回答");
+    fireEvent.click(screen.getByRole("button", { name: "第一轮问题" }));
+
+    expect(screen.getByText("第一轮回答")).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining("/turns"),
+      expect.anything(),
     );
   });
 });

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import {
   getRun,
+  getSession,
   listSessions,
   resumeTurn,
   startTurn,
@@ -23,7 +24,13 @@ function SourceList({ sources }: { sources: SourceSnapshot[] }) {
     <ul>
       {sources.map((source) => (
         <li key={source.source_id}>
-          {source.title}
+          {source.url ? (
+            <a href={source.url} target="_blank" rel="noreferrer">
+              {source.title}
+            </a>
+          ) : (
+            source.title
+          )}
           {source.reason ? `：${source.reason}` : ""}
         </li>
       ))}
@@ -36,6 +43,7 @@ export function App({ run, runId }: AppProps) {
   const [loadError, setLoadError] = useState("");
   const [sessions, setSessions] = useState<string[]>([]);
   const [sessionId, setSessionId] = useState("");
+  const [sessionRuns, setSessionRuns] = useState<RunSnapshot[]>([]);
   const [message, setMessage] = useState("");
   const snapshot = loadedRun ?? run;
 
@@ -96,12 +104,27 @@ export function App({ run, runId }: AppProps) {
   function startNewSession() {
     setSessionId(crypto.randomUUID());
     setLoadedRun(undefined);
+    setSessionRuns([]);
     setLoadError("");
   }
 
+  async function selectSession(nextSessionId: string) {
+    setSessionId(nextSessionId);
+    setLoadedRun(undefined);
+    setSessionRuns([]);
+    setLoadError("");
+    try {
+      const session = await getSession(nextSessionId);
+      setSessionRuns(session.runs);
+      setLoadedRun(session.runs.at(-1));
+    } catch {
+      setLoadError("无法读取会话历史");
+    }
+  }
+
   return (
-    <main>
-      <aside>
+    <main className="app-shell">
+      <aside className="panel">
         <h1>会话</h1>
         <button type="button" onClick={startNewSession}>
           新建会话
@@ -112,11 +135,7 @@ export function App({ run, runId }: AppProps) {
             <li key={item}>
               <button
                 type="button"
-                onClick={() => {
-                  setSessionId(item);
-                  setLoadedRun(undefined);
-                  setLoadError("");
-                }}
+                onClick={() => void selectSession(item)}
               >
                 {item}
               </button>
@@ -124,8 +143,23 @@ export function App({ run, runId }: AppProps) {
           ))}
         </ul>
       </aside>
-      <section>
+      <section className="report-panel">
         <h2>研究报告</h2>
+        {sessionRuns.length > 0 ? (
+          <div className="history" aria-label="会话历史">
+            {sessionRuns.map((item) => (
+              <button
+                type="button"
+                key={item.run_id}
+                onClick={() => setLoadedRun(item)}
+                className={item.run_id === snapshot?.run_id ? "selected" : ""}
+              >
+                {item.question || "未命名问题"}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {snapshot?.question ? <h3>{snapshot.question}</h3> : null}
         {snapshot ? <p>运行状态：{snapshot.status}</p> : null}
         {snapshot?.interrupt_prompt ? <p>{snapshot.interrupt_prompt}</p> : null}
         {snapshot?.answer ? <pre>{snapshot.answer}</pre> : null}
@@ -139,7 +173,7 @@ export function App({ run, runId }: AppProps) {
           {snapshot?.status === "waiting_for_input" ? "继续研究" : "发送"}
         </button>
       </section>
-      <aside>
+      <aside className="panel evidence-panel">
         <h2>搜索候选</h2>
         <SourceList sources={snapshot?.evidence.candidates ?? []} />
         <h2>已读取正文</h2>

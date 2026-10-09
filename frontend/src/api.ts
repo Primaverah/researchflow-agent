@@ -11,6 +11,9 @@ export type RunSnapshot = {
   run_id: string;
   session_id: string;
   status: string;
+  question?: string;
+  evidence_status?: string | null;
+  evidence_policy?: string | null;
   answer?: string | null;
   interrupt_prompt?: string | null;
   evidence: {
@@ -18,6 +21,11 @@ export type RunSnapshot = {
     read_sources: SourceSnapshot[];
     rejected_sources: SourceSnapshot[];
   };
+};
+
+export type SessionSnapshot = {
+  session_id: string;
+  runs: RunSnapshot[];
 };
 
 export type RunEvent = {
@@ -44,6 +52,14 @@ export async function listSessions(): Promise<string[]> {
     throw new Error(`Unable to load sessions (${response.status})`);
   }
   return (await response.json()) as string[];
+}
+
+export async function getSession(sessionId: string): Promise<SessionSnapshot> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+  if (!response.ok) {
+    throw new Error(`Unable to load session (${response.status})`);
+  }
+  return (await response.json()) as SessionSnapshot;
 }
 
 export async function startTurn(
