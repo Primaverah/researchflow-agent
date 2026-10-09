@@ -111,11 +111,16 @@ class RunSnapshot(DomainModel):
     run_id: str
     session_id: str
     status: RunStatus
+    question: str = ""
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
     evidence: EvidenceSnapshot = Field(default_factory=EvidenceSnapshot)
     evidence_status: str | None = None
     evidence_gaps: list[str] = Field(default_factory=list)
+    evidence_policy: str | None = None
+    accepted_source_count: int = 0
+    required_source_count: int = 0
+    official_complete_source_id: str | None = None
     answer: str | None = None
     end_reason: str | None = None
     generation_mode: str | None = None

@@ -169,6 +169,39 @@ def test_insufficient_evidence_is_not_persisted_as_completed(tmp_path) -> None:
     assert service.events_for_run(snapshot.run_id)[-1].type == "run_completed"
 
 
+def test_run_snapshot_preserves_question_and_evidence_policy_after_reload(
+    tmp_path,
+) -> None:
+    def workflow(message: str, _session_id: str, publish) -> AgentState:
+        publish(
+            "evidence_assessed",
+            {
+                "status": "partial",
+                "gaps": ["insufficient_distinct_sources"],
+                "policy": "current_complete_list",
+                "accepted_source_count": 1,
+                "required_source_count": 2,
+                "official_complete_source_id": None,
+            },
+        )
+        return AgentState(
+            run_id="workflow-run",
+            query=message,
+            status=AgentStatus.COMPLETED,
+            final_answer="insufficient",
+        )
+
+    database = tmp_path / "checkpoints.sqlite3"
+    snapshot = ResearchService(database, workflow=workflow).start_turn(
+        StartTurn(session_id="one", message="今年获奖名单", idempotency_key="key-1")
+    )
+    reloaded = ResearchService(database, workflow=workflow).get_run(snapshot.run_id)
+
+    assert reloaded.question == "今年获奖名单"
+    assert reloaded.evidence_policy == "current_complete_list"
+    assert reloaded.required_source_count == 2
+
+
 def test_session_runner_persists_interrupt_then_resumes_once(tmp_path) -> None:
     class FakeSessionRunner:
         def __init__(self) -> None:

@@ -21,7 +21,9 @@ class SqliteRunStore:
         self._database = database
         self._initialize()
 
-    def create_run(self, session_id: str, idempotency_key: str) -> RunSnapshot:
+    def create_run(
+        self, session_id: str, idempotency_key: str, *, question: str = ""
+    ) -> RunSnapshot:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT run_id FROM researchflow_idempotency "
@@ -35,6 +37,7 @@ class SqliteRunStore:
                 run_id=uuid4().hex,
                 session_id=session_id,
                 status=RunStatus.CREATED,
+                question=question,
                 created_at=now,
                 updated_at=now,
             )

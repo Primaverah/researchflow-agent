@@ -32,7 +32,9 @@ class ResearchService:
         self._session_runner = session_runner
 
     def start_turn(self, request: StartTurn) -> RunSnapshot:
-        snapshot = self._store.create_run(request.session_id, request.idempotency_key)
+        snapshot = self._store.create_run(
+            request.session_id, request.idempotency_key, question=request.message
+        )
         if snapshot.status is not RunStatus.CREATED:
             return snapshot
         if self._session_runner is not None:
@@ -213,6 +215,16 @@ class ResearchService:
                 update["evidence_status"] = status
             if isinstance(gaps, list) and all(isinstance(item, str) for item in gaps):
                 update["evidence_gaps"] = gaps
+            policy = data.get("policy")
+            if isinstance(policy, str):
+                update["evidence_policy"] = policy
+            for field in ("accepted_source_count", "required_source_count"):
+                value = data.get(field)
+                if isinstance(value, int) and value >= 0:
+                    update[field] = value
+            official_source_id = data.get("official_complete_source_id")
+            if isinstance(official_source_id, str) or official_source_id is None:
+                update["official_complete_source_id"] = official_source_id
         if event.type == "generation_status":
             mode = data.get("mode")
             if isinstance(mode, str):
