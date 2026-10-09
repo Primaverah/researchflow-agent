@@ -3,10 +3,10 @@
 import json
 
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel, Field, field_validator
 
-from researchflow.application.models import ResumeTurn, StartTurn
+from researchflow.application.models import ResumeTurn, SessionRecord, StartTurn
 from researchflow.application.service import ResearchService
 
 
@@ -18,6 +18,18 @@ class ResumeRequest(BaseModel):
     answer: str = Field(min_length=1)
 
 
+class SessionRenameRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=80)
+
+    @field_validator("display_name")
+    @classmethod
+    def require_non_blank_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("display name must not be empty")
+        return cleaned
+
+
 def create_app(service: ResearchService) -> FastAPI:
     app = FastAPI(title="ResearchFlow Local API")
 
@@ -26,8 +38,24 @@ def create_app(service: ResearchService) -> FastAPI:
         return {"scope": "loopback"}
 
     @app.get("/api/sessions")
-    def list_sessions() -> list[str]:
+    def list_sessions() -> list[SessionRecord]:
         return service.list_sessions()
+
+    @app.patch("/api/sessions/{session_id}")
+    def rename_session(session_id: str, request: SessionRenameRequest) -> SessionRecord:
+        try:
+            return service.rename_session(session_id, request.display_name)
+        except (KeyError, ValueError) as exc:
+            status_code = 404 if isinstance(exc, KeyError) else 422
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    @app.delete("/api/sessions/{session_id}", status_code=204)
+    def delete_session(session_id: str) -> Response:
+        try:
+            service.delete_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="session not found") from exc
+        return Response(status_code=204)
 
     @app.post("/api/sessions/{session_id}/turns", status_code=202)
     def start_turn(
@@ -109,6 +137,9 @@ def create_app(service: ResearchService) -> FastAPI:
 
     @app.get("/api/sessions/{session_id}")
     def get_session(session_id: str):
-        return service.get_session(session_id)
+        snapshot = service.get_session(session_id)
+        if not snapshot.runs:
+            raise HTTPException(status_code=404, detail="session not found")
+        return snapshot
 
     return app

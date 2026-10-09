@@ -110,7 +110,55 @@ def test_sessions_route_lists_application_sessions(tmp_path) -> None:
     response = client.get("/api/sessions")
 
     assert response.status_code == 200
-    assert response.json() == ["demo"]
+    assert response.json()[0]["session_id"] == "demo"
+    assert response.json()[0]["display_name"] == "tool calling"
+
+
+def test_session_api_renames_then_deletes_exact_session(tmp_path) -> None:
+    service = ResearchService(
+        tmp_path / "checkpoints.sqlite3",
+        workflow=lambda message, _: AgentState(
+            run_id="workflow-run",
+            query=message,
+            status=AgentStatus.COMPLETED,
+            final_answer="verified answer",
+        ),
+    )
+    client = TestClient(create_app(service))
+    for session_id, key in (("alpha", "one"), ("beta", "two")):
+        client.post(
+            f"/api/sessions/{session_id}/turns",
+            json={"message": session_id},
+            headers={"Idempotency-Key": key},
+        )
+
+    renamed = client.patch("/api/sessions/alpha", json={"display_name": "作者资料"})
+    deleted = client.delete("/api/sessions/alpha")
+
+    assert renamed.status_code == 200
+    assert renamed.json()["display_name"] == "作者资料"
+    assert deleted.status_code == 204
+    assert client.get("/api/sessions/alpha").status_code == 404
+    assert [item["session_id"] for item in client.get("/api/sessions").json()] == [
+        "beta"
+    ]
+
+
+def test_session_api_rejects_blank_or_unknown_rename(tmp_path) -> None:
+    service = ResearchService(
+        tmp_path / "checkpoints.sqlite3",
+        workflow=lambda message, _: AgentState(
+            run_id="workflow-run", query=message, status=AgentStatus.COMPLETED
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    missing = client.patch("/api/sessions/missing", json={"display_name": "名称"})
+    blank = client.patch("/api/sessions/missing", json={"display_name": " "})
+
+    assert missing.status_code == 404
+    assert blank.status_code == 422
+    assert client.delete("/api/sessions/missing").status_code == 404
 
 
 def test_resume_rejects_session_without_a_waiting_run(tmp_path) -> None:
