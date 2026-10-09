@@ -428,6 +428,7 @@ def test_all_web_reads_failed_returns_candidate_links_and_failure_reasons(
     assert "没有成功读取任何候选来源" in state.final_answer
     assert "https://example.com/jackie" in state.final_answer
     assert "expected failure" in state.final_answer
+    assert "Search snippet only" not in state.final_answer
 
 
 def test_read_limit_bounds_total_source_reads_before_insufficient_report(
@@ -491,7 +492,7 @@ def test_current_complete_list_does_not_summarize_one_non_official_source(
                         {
                             "url": "https://news.example/winners",
                             "title": "2026 诺贝尔奖获奖者名单",
-                            "summary": "完整名单",
+                            "summary": "只可用于内部排序的搜索摘要",
                         }
                     ]
                 },
@@ -519,6 +520,7 @@ def test_current_complete_list_does_not_summarize_one_non_official_source(
 
     assert "证据门槛" in state.final_answer
     assert "回答生成状态" not in state.final_answer
+    assert "只可用于内部排序的搜索摘要" not in state.final_answer
 
 
 def test_current_complete_list_accepts_one_configured_official_complete_source(

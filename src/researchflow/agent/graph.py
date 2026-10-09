@@ -403,12 +403,10 @@ class GraphAgentRunner:
         result_message = (
             "没有成功读取任何候选来源，因此无法提供经来源验证的事实性回答。"
             if not (state.documents or state.web_sources)
-            else "已读取来源不足以满足当前问题的证据门槛，因此未生成事实性总结。"
+            else "证据不足：已读取来源未满足当前问题的证据门槛。"
         )
         candidates = [
-            "- "
-            f"{candidate.title} — {candidate.locator}\n"
-            f"  搜索摘要（未读取正文）：{candidate.summary or '无'}"
+            f"- {candidate.title} — {candidate.locator}"
             for candidate in state.candidates
         ] or ["- 无"]
         failures = [f"- {item}" for item in state.rejected_sources] or ["- 无"]
