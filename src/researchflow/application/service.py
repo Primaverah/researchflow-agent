@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from inspect import Parameter, signature
 from pathlib import Path
 
-from researchflow.agent.session import ChatResult, SessionResearchResult
+from researchflow.agent.session import ChatResult, SessionCatalog, SessionResearchResult
 from researchflow.application.events import EventBroker
 from researchflow.application.models import (
     EventEnvelope,
@@ -12,6 +12,7 @@ from researchflow.application.models import (
     ResumeTurn,
     RunSnapshot,
     RunStatus,
+    SessionRecord,
     SessionSnapshot,
     SourceSnapshot,
     StartTurn,
@@ -29,6 +30,7 @@ class ResearchService:
         session_runner: object | None = None,
     ) -> None:
         self._store = SqliteRunStore(database)
+        self._database = database
         self._events = EventBroker(self._store)
         self._workflow = workflow
         self._session_runner = session_runner
@@ -173,8 +175,16 @@ class ResearchService:
             session_id=session_id, runs=self._store.list_session_runs(session_id)
         )
 
-    def list_sessions(self) -> list[str]:
-        return self._store.list_session_ids()
+    def list_sessions(self) -> list[SessionRecord]:
+        return self._store.list_sessions()
+
+    def rename_session(self, session_id: str, display_name: str) -> SessionRecord:
+        return self._store.rename_session(session_id, display_name)
+
+    def delete_session(self, session_id: str) -> None:
+        if not self._store.delete_session(session_id):
+            raise KeyError(session_id)
+        SessionCatalog(self._database).delete_exact(session_id)
 
     def events_for_run(
         self, run_id: str, *, after_event_id: int = 0

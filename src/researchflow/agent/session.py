@@ -99,6 +99,10 @@ class SessionCatalog:
                     )
         return deleted > 0
 
+    def delete_exact(self, session_id: str) -> bool:
+        """Explicit alias used by application lifecycle deletion."""
+        return self.delete(session_id)
+
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._database)
 

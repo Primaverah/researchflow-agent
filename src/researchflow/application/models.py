@@ -136,6 +136,14 @@ class SessionSnapshot(DomainModel):
     runs: list[RunSnapshot] = Field(default_factory=list)
 
 
+class SessionRecord(DomainModel):
+    """Human-facing metadata that never replaces the checkpoint identity."""
+
+    session_id: str
+    display_name: str
+    updated_at: datetime
+
+
 class EventEnvelope(DomainModel):
     event_id: int
     run_id: str

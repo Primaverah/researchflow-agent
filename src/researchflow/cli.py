@@ -831,5 +831,13 @@ def delete_session(
     output_dir: Annotated[Path, typer.Option("--output-dir")] = Path("output"),
 ) -> None:
     """Delete one exact session and its checkpoints."""
-    if not SessionCatalog(_session_database(output_dir)).delete(session_id):
+    service = ResearchService(
+        _session_database(output_dir),
+        workflow=lambda message, _: AgentState(
+            run_id="session-delete", query=message, status=AgentStatus.COMPLETED
+        ),
+    )
+    try:
+        service.delete_session(session_id)
+    except KeyError:
         _input_error("会话不存在")

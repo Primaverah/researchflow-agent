@@ -6,7 +6,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from researchflow.application.models import EventEnvelope, RunSnapshot, RunStatus
+from researchflow.application.models import (
+    EventEnvelope,
+    RunSnapshot,
+    RunStatus,
+    SessionRecord,
+)
 
 
 def _utc_now() -> datetime:
@@ -59,6 +64,12 @@ class SqliteRunStore:
                 "(session_id, idempotency_key, run_id) VALUES (?, ?, ?)",
                 (session_id, idempotency_key, snapshot.run_id),
             )
+            connection.execute(
+                "INSERT INTO researchflow_session_metadata "
+                "(session_id, display_name, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET updated_at=excluded.updated_at",
+                (session_id, _fallback_display_name(question), now.isoformat()),
+            )
             return snapshot
 
     def list_session_runs(self, session_id: str) -> list[RunSnapshot]:
@@ -76,6 +87,68 @@ class SqliteRunStore:
                 "SELECT DISTINCT session_id FROM researchflow_runs ORDER BY session_id"
             ).fetchall()
             return [row[0] for row in rows]
+
+    def list_sessions(self) -> list[SessionRecord]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT session_id, display_name, updated_at "
+                "FROM researchflow_session_metadata ORDER BY updated_at DESC"
+            ).fetchall()
+        return [
+            SessionRecord(session_id=row[0], display_name=row[1], updated_at=row[2])
+            for row in rows
+        ]
+
+    def rename_session(self, session_id: str, display_name: str) -> SessionRecord:
+        cleaned = display_name.strip()
+        if not cleaned:
+            raise ValueError("display name must not be empty")
+        now = _utc_now()
+        with self._connect() as connection:
+            updated = connection.execute(
+                "UPDATE researchflow_session_metadata "
+                "SET display_name = ?, updated_at = ? WHERE session_id = ?",
+                (cleaned, now.isoformat(), session_id),
+            ).rowcount
+        if not updated:
+            raise KeyError(session_id)
+        return SessionRecord(
+            session_id=session_id, display_name=cleaned, updated_at=now
+        )
+
+    def delete_session(self, session_id: str) -> bool:
+        """Delete only application-owned rows for one session."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run_ids = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT run_id FROM researchflow_runs WHERE session_id = ?",
+                    (session_id,),
+                ).fetchall()
+            ]
+            if run_ids:
+                placeholders = ", ".join("?" for _ in run_ids)
+                connection.execute(
+                    f"DELETE FROM researchflow_events WHERE run_id IN ({placeholders})",
+                    run_ids,
+                )
+            connection.execute(
+                "DELETE FROM researchflow_idempotency WHERE session_id = ?",
+                (session_id,),
+            )
+            connection.execute(
+                "DELETE FROM researchflow_resume_idempotency WHERE session_id = ?",
+                (session_id,),
+            )
+            connection.execute(
+                "DELETE FROM researchflow_runs WHERE session_id = ?", (session_id,)
+            )
+            deleted = connection.execute(
+                "DELETE FROM researchflow_session_metadata WHERE session_id = ?",
+                (session_id,),
+            ).rowcount
+        return deleted > 0
 
     def get_run(self, run_id: str) -> RunSnapshot:
         with self._connect() as connection:
@@ -169,6 +242,11 @@ class SqliteRunStore:
                 "(session_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, "
                 "run_id TEXT NOT NULL, PRIMARY KEY (session_id, idempotency_key))"
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS researchflow_session_metadata "
+                "(session_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, "
+                "updated_at TEXT NOT NULL)"
+            )
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._database)
@@ -181,3 +259,8 @@ class SqliteRunStore:
         if row is None:
             raise KeyError(run_id)
         return RunSnapshot.model_validate(json.loads(row[0]))
+
+
+def _fallback_display_name(question: str) -> str:
+    cleaned = question.strip()
+    return cleaned[:80] if cleaned else "未命名会话"
