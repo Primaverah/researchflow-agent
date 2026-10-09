@@ -4,9 +4,11 @@ from collections.abc import Callable, Mapping
 from inspect import Parameter, signature
 from pathlib import Path
 
+from researchflow.agent.session import ChatResult, SessionResearchResult
 from researchflow.application.events import EventBroker
 from researchflow.application.models import (
     EventEnvelope,
+    EvidenceSnapshot,
     ResumeTurn,
     RunSnapshot,
     RunStatus,
@@ -94,13 +96,7 @@ class ResearchService:
             raise ValueError("session does not have exactly one waiting run")
         result = self._session_runner.resume(request.session_id, request.answer)
         snapshot = self._store.save(
-            waiting[0].model_copy(
-                update={
-                    "status": RunStatus.COMPLETED,
-                    "answer": result.response,
-                    "interrupt_prompt": None,
-                }
-            )
+            self._snapshot_from_session_result(waiting[0], result, clear_interrupt=True)
         )
         self._store.save_resume(request.session_id, request.idempotency_key, snapshot)
         return snapshot
@@ -120,11 +116,47 @@ class ResearchService:
                     }
                 )
             )
-        return self._store.save(
-            snapshot.model_copy(
-                update={"status": RunStatus.COMPLETED, "answer": result.response}
-            )
+        return self._store.save(self._snapshot_from_session_result(snapshot, result))
+
+    @staticmethod
+    def _snapshot_from_session_result(
+        snapshot: RunSnapshot, result: ChatResult, *, clear_interrupt: bool = False
+    ) -> RunSnapshot:
+        research = result.research_result
+        status = (
+            RunStatus.INSUFFICIENT_EVIDENCE
+            if research is not None and research.evidence_status == "insufficient"
+            else RunStatus.COMPLETED
         )
+        update: dict[str, object] = {
+            "status": status,
+            "answer": result.response,
+        }
+        if clear_interrupt:
+            update["interrupt_prompt"] = None
+        if research is not None:
+            update.update(ResearchService._session_research_update(research))
+        return snapshot.model_copy(update=update)
+
+    @staticmethod
+    def _session_research_update(research: SessionResearchResult) -> dict[str, object]:
+        def sources(items):
+            return [SourceSnapshot.model_validate(item.model_dump()) for item in items]
+
+        return {
+            "evidence": EvidenceSnapshot(
+                candidates=sources(research.candidates),
+                read_sources=sources(research.read_sources),
+                rejected_sources=sources(research.rejected_sources),
+            ),
+            "evidence_status": research.evidence_status,
+            "evidence_gaps": research.evidence_gaps,
+            "evidence_policy": research.evidence_policy,
+            "accepted_source_count": research.accepted_source_count,
+            "required_source_count": research.required_source_count,
+            "official_complete_source_id": research.official_complete_source_id,
+            "generation_mode": research.generation_mode,
+        }
 
     def get_run(self, run_id: str) -> RunSnapshot:
         return self._store.get_run(run_id)

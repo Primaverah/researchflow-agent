@@ -53,16 +53,33 @@ describe("App", () => {
     );
 
     expect(screen.getByRole("heading", { name: "会话" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "搜索候选" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "已读取正文" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "拒绝或读取失败" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "研究证据" })).toBeInTheDocument();
+    expect(screen.getByText("搜索候选（未读取正文）")).toBeInTheDocument();
+    expect(screen.getByText("已读取正文")).toBeInTheDocument();
+    expect(screen.getByText("拒绝或读取失败")).toBeInTheDocument();
     expect(screen.getByText("仅搜索摘要")).toBeInTheDocument();
     expect(screen.getByText("已读正文")).toBeInTheDocument();
+    expect(screen.getByText("原因：web_low_quality_content")).toBeInTheDocument();
+  });
+
+  it("uses one compact empty state when a run has no evidence", () => {
+    render(
+      <App
+        run={{
+          run_id: "run-empty",
+          session_id: "session-empty",
+          status: "completed",
+          evidence: { candidates: [], read_sources: [], rejected_sources: [] },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("暂无可展示的研究证据")).toBeInTheDocument();
     expect(
-      screen.getAllByText(
-        (_, element) => element?.textContent === "拒绝来源：web_low_quality_content",
-      ),
-    ).not.toHaveLength(0);
+      screen.queryByText("搜索候选（未读取正文）"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("已读取正文")).toBeNull();
+    expect(screen.queryByText("拒绝或读取失败")).toBeNull();
   });
 
   it("renders a final answer as plain text instead of source HTML", () => {
@@ -101,7 +118,7 @@ describe("App", () => {
 
     render(<App runId="run-1" />);
 
-    expect(await screen.findByText("运行状态：completed")).toBeInTheDocument();
+    expect(await screen.findByText("completed")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith("/api/runs/run-1");
   });
 
@@ -132,7 +149,7 @@ describe("App", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(await screen.findByText("运行状态：completed")).toBeInTheDocument();
+    expect(await screen.findByText("completed")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "/api/sessions/saved-session/turns",

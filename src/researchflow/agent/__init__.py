@@ -18,6 +18,8 @@ from researchflow.agent.session import (
     SessionCatalog,
     SessionGraphState,
     SessionResearchRequest,
+    SessionResearchResult,
+    SessionSource,
 )
 from researchflow.agent.summarizer import ExtractiveSummarizer
 from researchflow.agent.web import WebRulePlanner, WebStateSelector
@@ -41,6 +43,8 @@ __all__ = [
     "SessionCatalog",
     "SessionGraphState",
     "SessionResearchRequest",
+    "SessionResearchResult",
+    "SessionSource",
     "WebRulePlanner",
     "WebStateSelector",
 ]

@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from researchflow import __version__, cli
 from researchflow.cli import app
+from researchflow.domain import AgentState, AgentStatus
 from researchflow.llm import (
     BaseLLMProvider,
     LLMConfigurationError,
@@ -562,6 +563,69 @@ def test_graph_run_projects_evidence_into_persisted_application_snapshot(
     assert snapshot["evidence"]["read_sources"][0]["source_id"] == "agent.md"
     assert "source_read" in event_types
     assert event_types.count("run_completed") == 1
+
+
+def test_session_runner_projects_research_events_into_session_result(
+    cli_paths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    documents, output = cli_paths
+
+    def workflow(*_args, **kwargs):
+        event_sink = kwargs["event_sink"]
+        event_sink(
+            "candidate_selected",
+            {
+                "source_id": "https://example.test/news",
+                "title": "官方新闻",
+                "kind": "web",
+            },
+        )
+        event_sink(
+            "source_read",
+            {
+                "source_id": "https://example.test/news",
+                "title": "官方新闻",
+                "kind": "web",
+            },
+        )
+        event_sink(
+            "evidence_assessed",
+            {
+                "status": "sufficient",
+                "gaps": [],
+                "policy": "overview",
+                "accepted_source_count": 1,
+                "required_source_count": 1,
+                "official_complete_source_id": None,
+            },
+        )
+        event_sink("generation_status", {"mode": "llm_grounded"})
+        return (
+            AgentState(
+                run_id="session-run",
+                query="问题",
+                status=AgentStatus.COMPLETED,
+                final_answer="基于官方新闻的回答",
+            ),
+            object(),
+        )
+
+    monkeypatch.setattr(cli, "_run_workflow", workflow)
+    session_runner = cli._session_runner(
+        documents,
+        output,
+        agent_mode="rule",
+        enable_web=True,
+        allowed_domains=(),
+        llm_overrides=None,
+    )
+    result = session_runner.chat("问题", session_id="session-evidence")
+    session_runner.close()
+
+    assert result.research_result is not None
+    assert result.research_result.read_sources[0].title == "官方新闻"
+    assert result.research_result.evidence_status == "sufficient"
+    assert result.research_result.generation_mode == "llm_grounded"
 
 
 def test_invalid_max_steps_does_not_start_interactive_prompt() -> None:

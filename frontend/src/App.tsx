@@ -17,25 +17,61 @@ type AppProps = {
 };
 
 function SourceList({ sources }: { sources: SourceSnapshot[] }) {
-  if (sources.length === 0) {
-    return <p>无</p>;
-  }
   return (
-    <ul>
+    <ul className="source-list">
       {sources.map((source) => (
-        <li key={source.source_id}>
-          {source.url ? (
-            <a href={source.url} target="_blank" rel="noreferrer">
-              {source.title}
-            </a>
-          ) : (
-            source.title
-          )}
-          {source.reason ? `：${source.reason}` : ""}
+        <li className="source-item" key={source.source_id}>
+          <span className="source-kind">{source.kind === "web" ? "网页" : "文档"}</span>
+          <span className="source-content">
+            {source.url ? (
+              <a href={source.url} target="_blank" rel="noreferrer">
+                {source.title}
+              </a>
+            ) : (
+              source.title
+            )}
+            {source.reason ? <small>原因：{source.reason}</small> : null}
+          </span>
         </li>
       ))}
     </ul>
   );
+}
+
+function EvidencePanel({ snapshot }: { snapshot?: RunSnapshot }) {
+  const evidence = snapshot?.evidence;
+  const groups = [
+    { label: "搜索候选（未读取正文）", sources: evidence?.candidates ?? [] },
+    { label: "已读取正文", sources: evidence?.read_sources ?? [] },
+    { label: "拒绝或读取失败", sources: evidence?.rejected_sources ?? [] },
+  ];
+  const populatedGroups = groups.filter((group) => group.sources.length > 0);
+
+  return (
+    <aside className="panel evidence-panel" aria-label="研究证据">
+      <div className="panel-heading">
+        <p className="eyebrow">证据轨迹</p>
+        <h2>研究证据</h2>
+        {snapshot?.evidence_status ? (
+          <span className="evidence-status">{snapshot.evidence_status}</span>
+        ) : null}
+      </div>
+      {populatedGroups.length === 0 ? (
+        <p className="empty-evidence">暂无可展示的研究证据</p>
+      ) : (
+        populatedGroups.map((group) => (
+          <section className="evidence-group" key={group.label}>
+            <h3>{group.label}</h3>
+            <SourceList sources={group.sources} />
+          </section>
+        ))
+      )}
+    </aside>
+  );
+}
+
+function compactId(value: string) {
+  return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value;
 }
 
 export function App({ run, runId }: AppProps) {
@@ -124,27 +160,42 @@ export function App({ run, runId }: AppProps) {
 
   return (
     <main className="app-shell">
-      <aside className="panel">
-        <h1>会话</h1>
-        <button type="button" onClick={startNewSession}>
+      <aside className="panel session-panel">
+        <div className="panel-heading">
+          <p className="eyebrow">ResearchFlow</p>
+          <h1>会话</h1>
+        </div>
+        <button className="primary-button" type="button" onClick={startNewSession}>
           新建会话
         </button>
-        {sessionId ? <p>当前会话：{sessionId}</p> : null}
-        <ul>
+        {sessionId ? (
+          <p className="current-session" title={sessionId}>
+            当前会话：{compactId(sessionId)}
+          </p>
+        ) : null}
+        <ul className="session-list">
           {sessions.map((item) => (
             <li key={item}>
               <button
                 type="button"
                 onClick={() => void selectSession(item)}
+                title={item}
+                className={item === sessionId ? "selected" : ""}
               >
-                {item}
+                {compactId(item)}
               </button>
             </li>
           ))}
         </ul>
       </aside>
-      <section className="report-panel">
-        <h2>研究报告</h2>
+      <section className="report-panel" aria-live="polite">
+        <div className="report-heading">
+          <div>
+            <p className="eyebrow">研究结果</p>
+            <h2>研究报告</h2>
+          </div>
+          {snapshot ? <span className="run-status">{snapshot.status}</span> : null}
+        </div>
         {sessionRuns.length > 0 ? (
           <div className="history" aria-label="会话历史">
             {sessionRuns.map((item) => (
@@ -159,28 +210,25 @@ export function App({ run, runId }: AppProps) {
             ))}
           </div>
         ) : null}
-        {snapshot?.question ? <h3>{snapshot.question}</h3> : null}
-        {snapshot ? <p>运行状态：{snapshot.status}</p> : null}
-        {snapshot?.interrupt_prompt ? <p>{snapshot.interrupt_prompt}</p> : null}
-        {snapshot?.answer ? <pre>{snapshot.answer}</pre> : null}
-        {loadError ? <p role="alert">{loadError}</p> : null}
-        <textarea
-          aria-label="研究问题"
-          value={message}
-          onChange={(event) => setMessage(event.target.value)}
-        />
-        <button type="button" onClick={submitTurn}>
-          {snapshot?.status === "waiting_for_input" ? "继续研究" : "发送"}
-        </button>
+        {snapshot?.question ? <h3 className="question-title">{snapshot.question}</h3> : null}
+        {snapshot?.interrupt_prompt ? (
+          <p className="interrupt-prompt">{snapshot.interrupt_prompt}</p>
+        ) : null}
+        {snapshot?.answer ? <pre className="answer">{snapshot.answer}</pre> : null}
+        {loadError ? <p role="alert" className="error-message">{loadError}</p> : null}
+        <div className="composer">
+          <textarea
+            aria-label="研究问题"
+            placeholder="输入需要研究的问题…"
+            value={message}
+            onChange={(event) => setMessage(event.target.value)}
+          />
+          <button className="primary-button" type="button" onClick={submitTurn}>
+            {snapshot?.status === "waiting_for_input" ? "继续研究" : "发送"}
+          </button>
+        </div>
       </section>
-      <aside className="panel evidence-panel">
-        <h2>搜索候选</h2>
-        <SourceList sources={snapshot?.evidence.candidates ?? []} />
-        <h2>已读取正文</h2>
-        <SourceList sources={snapshot?.evidence.read_sources ?? []} />
-        <h2>拒绝或读取失败</h2>
-        <SourceList sources={snapshot?.evidence.rejected_sources ?? []} />
-      </aside>
+      <EvidencePanel snapshot={snapshot} />
     </main>
   );
 }

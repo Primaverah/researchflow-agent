@@ -1,4 +1,9 @@
-from researchflow.agent.session import ChatResult, LangGraphSessionRunner
+from researchflow.agent.session import (
+    ChatResult,
+    LangGraphSessionRunner,
+    SessionResearchResult,
+    SessionSource,
+)
 from researchflow.application.models import ResumeTurn, RunStatus, StartTurn
 from researchflow.application.service import ResearchService
 from researchflow.domain import AgentState, AgentStatus
@@ -243,6 +248,74 @@ def test_session_runner_persists_interrupt_then_resumes_once(tmp_path) -> None:
     assert resumed.answer == "已恢复"
     assert duplicate.run_id == resumed.run_id
     assert runner.calls == [("chat", "clarify"), ("具体问题", "clarify")]
+
+
+def test_session_result_projects_verified_evidence_into_completed_run(tmp_path) -> None:
+    class FakeSessionRunner:
+        def chat(self, _message: str, *, session_id: str) -> ChatResult:
+            assert session_id == "web-session"
+            return ChatResult(
+                response="基于官方公告的回答",
+                research_result=SessionResearchResult(
+                    response="基于官方公告的回答",
+                    candidates=[
+                        SessionSource(
+                            source_id="https://example.test/news",
+                            title="官方公告",
+                            url="https://example.test/news",
+                            kind="web",
+                            read=False,
+                        )
+                    ],
+                    read_sources=[
+                        SessionSource(
+                            source_id="https://example.test/news",
+                            title="官方公告",
+                            url="https://example.test/news",
+                            kind="web",
+                            read=True,
+                        )
+                    ],
+                    evidence_status="sufficient",
+                    evidence_policy="overview",
+                    accepted_source_count=1,
+                    required_source_count=1,
+                    generation_mode="llm_grounded",
+                ),
+            )
+
+    database = tmp_path / "checkpoints.sqlite3"
+    snapshot = ResearchService(
+        database,
+        workflow=lambda message, _: AgentState(
+            run_id="unused",
+            query=message,
+            status=AgentStatus.COMPLETED,
+        ),
+        session_runner=FakeSessionRunner(),
+    ).start_turn(
+        StartTurn(
+            session_id="web-session", message="问题", idempotency_key="web-evidence"
+        )
+    )
+
+    assert snapshot.status is RunStatus.COMPLETED
+    assert snapshot.evidence.candidates[0].title == "官方公告"
+    assert snapshot.evidence.read_sources[0].url == "https://example.test/news"
+    assert snapshot.evidence_status == "sufficient"
+    assert snapshot.generation_mode == "llm_grounded"
+    assert (
+        ResearchService(
+            database,
+            workflow=lambda message, _: AgentState(
+                run_id="unused", query=message, status=AgentStatus.COMPLETED
+            ),
+        )
+        .get_run(snapshot.run_id)
+        .evidence.read_sources[0]
+        .title
+        == "官方公告"
+    )
 
 
 def test_rebuilt_runner_resumes_waiting_run_with_original_session_id(tmp_path) -> None:

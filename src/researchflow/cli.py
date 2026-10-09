@@ -24,6 +24,7 @@ from researchflow.agent import (
     RulePlanner,
     SessionCatalog,
     SessionResearchRequest,
+    SessionResearchResult,
     StateSelector,
     WebRulePlanner,
     WebStateSelector,
@@ -225,7 +226,12 @@ def _session_runner(
     allowed_domains: tuple[str, ...],
     llm_overrides: dict[str, object] | None,
 ) -> LangGraphSessionRunner:
-    def research(request: SessionResearchRequest) -> str:
+    def research(request: SessionResearchRequest) -> SessionResearchResult:
+        events: list[tuple[str, dict[str, object]]] = []
+
+        def collect_event(event_type: str, data: dict[str, object]) -> None:
+            events.append((event_type, data))
+
         state, _ = _run_workflow(
             request.standalone_query,
             documents_dir,
@@ -238,8 +244,11 @@ def _session_runner(
             "langgraph",
             answer_target=request.answer_target,
             answer_language=request.answer_language,
+            event_sink=collect_event,
         )
-        return state.final_answer or "未找到相关文档。"
+        return SessionResearchResult.from_events(
+            state.final_answer or "未找到相关文档。", events
+        )
 
     return LangGraphSessionRunner(
         _session_database(output_dir),
