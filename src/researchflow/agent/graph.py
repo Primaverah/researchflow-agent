@@ -14,7 +14,11 @@ from typing import Any, Protocol
 
 from pydantic import Field
 
-from researchflow.agent.evidence_policy import evaluate_evidence_policy
+from researchflow.agent.evidence_policy import (
+    build_retrieval_query,
+    classify_freshness_intent,
+    evaluate_evidence_policy,
+)
 from researchflow.agent.planner import RulePlanner
 from researchflow.agent.selector import StateSelector
 from researchflow.agent.summarizer import ExtractiveSummarizer, SummaryGenerationStatus
@@ -250,11 +254,27 @@ class GraphAgentRunner:
 
     def _retrieve(self, state: AgentGraphState, context: ToolContext) -> dict[str, Any]:
         calls = [
-            ("search_documents", {"query": state.query, "limit": self._candidate_limit})
+            (
+                "search_documents",
+                {
+                    "query": build_retrieval_query(
+                        state.query, classify_freshness_intent(state.query)
+                    ),
+                    "limit": self._candidate_limit,
+                },
+            )
         ]
         if self._has_web_plan(state):
             calls.append(
-                ("web_search", {"query": state.query, "limit": self._candidate_limit})
+                (
+                    "web_search",
+                    {
+                        "query": build_retrieval_query(
+                            state.query, classify_freshness_intent(state.query)
+                        ),
+                        "limit": self._candidate_limit,
+                    },
+                )
             )
         outcomes = self._parallel_calls(state, context, calls)
         candidates: list[GraphCandidate] = []
@@ -266,7 +286,7 @@ class GraphAgentRunner:
                 candidates.extend(self._web_candidates(result.output))
         return {
             "agent": self._agent(state),
-            "candidates": self._deduplicate(candidates),
+            "candidates": self._deduplicate(candidates, state.query),
         }
 
     def _assess_evidence(
@@ -524,6 +544,14 @@ class GraphAgentRunner:
     @staticmethod
     def _evidence_rejection_reason(query: str, title: str, content: str) -> str | None:
         text = f"{title}\n{content}".casefold()
+        intent = classify_freshness_intent(query)
+        if (
+            intent.requires_current_evidence
+            and intent.requires_list_evidence
+            and intent.target_year is not None
+            and str(intent.target_year) not in text
+        ):
+            return "stale_for_current_query"
         if "编译器" in query or "compiler" in query.casefold():
             if any(
                 term in text for term in ("编译器", "compiler", "gcc", "clang", "msvc")
@@ -600,11 +628,23 @@ class GraphAgentRunner:
             if isinstance(item, dict) and isinstance(item.get("url"), str)
         ]
 
-    def _deduplicate(self, candidates: list[GraphCandidate]) -> list[GraphCandidate]:
+    def _deduplicate(
+        self, candidates: list[GraphCandidate], query: str = ""
+    ) -> list[GraphCandidate]:
         unique: dict[tuple[str, str], GraphCandidate] = {}
         for candidate in candidates:
             unique.setdefault((candidate.source_type, candidate.locator), candidate)
-        return list(unique.values())[: self._candidate_limit]
+        ordered = list(unique.values())
+        intent = classify_freshness_intent(query) if query else None
+        if intent is not None and intent.target_year is not None:
+            year = str(intent.target_year)
+            ordered = sorted(
+                ordered,
+                key=lambda candidate: 0
+                if year in f"{candidate.title}\n{candidate.summary}"
+                else 1,
+            )
+        return ordered[: self._candidate_limit]
 
     @staticmethod
     def _has_web_plan(state: AgentGraphState) -> bool:

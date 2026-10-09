@@ -1,5 +1,6 @@
 """Pure evidence thresholds shared by both research graph executors."""
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Literal
@@ -27,17 +28,62 @@ class EvidenceAssessment:
     official_complete_source_id: str | None = None
 
 
-_CURRENT_TERMS = ("今年", "最新", "本年度", "current", "latest", "this year")
+@dataclass(frozen=True, slots=True)
+class FreshnessIntent:
+    """Time/list constraints used only for retrieval and evidence admission."""
+
+    target_year: int | None = None
+    requires_current_evidence: bool = False
+    requires_list_evidence: bool = False
+
+
+_CURRENT_TERMS = (
+    "今年",
+    "本年度",
+    "当前",
+    "最新",
+    "current",
+    "currently",
+    "latest",
+    "this year",
+)
 _LIST_TERMS = (
     "获奖者",
     "获奖名单",
     "名单",
     "完整列表",
     "完整名单",
+    "哪些",
     "winners",
     "laureates",
     "list",
 )
+
+
+def classify_freshness_intent(
+    query: str, *, today: date | None = None
+) -> FreshnessIntent:
+    """Resolve explicit or relative years without changing the answer target."""
+    normalized = query.casefold()
+    explicit = re.search(r"(?:19|20)\d{2}", normalized)
+    target_year = int(explicit.group(0)) if explicit else None
+    is_current = target_year is not None or any(
+        term in normalized for term in _CURRENT_TERMS
+    )
+    if target_year is None and is_current:
+        target_year = (today or date.today()).year
+    return FreshnessIntent(
+        target_year=target_year,
+        requires_current_evidence=is_current,
+        requires_list_evidence=any(term in normalized for term in _LIST_TERMS),
+    )
+
+
+def build_retrieval_query(query: str, intent: FreshnessIntent) -> str:
+    """Add the resolved year once for search while preserving the original query."""
+    if intent.target_year is None or str(intent.target_year) in query:
+        return query
+    return f"{query} {intent.target_year}"
 _COMPLETE_LIST_TERMS = (
     "完整",
     "全部",
@@ -54,10 +100,8 @@ def classify_evidence_policy(
     query: str, *, official_domains: tuple[str, ...] = ()
 ) -> EvidencePolicy:
     """Classify only the narrow, freshness-sensitive complete-list intent."""
-    normalized = query.casefold()
-    if any(term in normalized for term in _CURRENT_TERMS) and any(
-        term in normalized for term in _LIST_TERMS
-    ):
+    intent = classify_freshness_intent(query)
+    if intent.requires_current_evidence and intent.requires_list_evidence:
         return EvidencePolicy(
             name="current_complete_list",
             required_source_count=2,

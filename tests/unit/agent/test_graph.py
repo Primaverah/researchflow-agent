@@ -545,6 +545,40 @@ def test_current_complete_list_does_not_summarize_one_non_official_source(
     assert "只可用于内部排序的搜索摘要" not in state.final_answer
 
 
+def test_current_list_rejects_old_year_body_and_reads_current_candidate_first(
+    tmp_path: Path,
+) -> None:
+    runner = GraphAgentRunner(
+        WebRulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        FakeExecutor(lambda _: None),
+    )
+    candidates = runner._web_candidates(
+        {
+            "results": [
+                {"url": "https://example.test/2022", "title": "2022 诺贝尔奖"},
+                {"url": "https://example.test/2026", "title": "2026 诺贝尔奖"},
+            ]
+        }
+    )
+
+    ordered = runner._deduplicate(candidates, "今年的诺贝尔奖目前出炉了哪些")
+
+    assert [candidate.locator for candidate in ordered] == [
+        "https://example.test/2026",
+        "https://example.test/2022",
+    ]
+    assert (
+        runner._evidence_rejection_reason(
+            "今年的诺贝尔奖目前出炉了哪些",
+            "2022 诺贝尔奖",
+            "2022 年诺贝尔奖获奖者名单。",
+        )
+        == "stale_for_current_query"
+    )
+
+
 def test_current_complete_list_accepts_one_configured_official_complete_source(
     tmp_path: Path,
 ) -> None:

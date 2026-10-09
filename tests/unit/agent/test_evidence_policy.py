@@ -1,6 +1,10 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
-from researchflow.agent.evidence_policy import evaluate_evidence_policy
+from researchflow.agent.evidence_policy import (
+    build_retrieval_query,
+    classify_freshness_intent,
+    evaluate_evidence_policy,
+)
 from researchflow.tools.web import WebSource
 
 
@@ -56,3 +60,22 @@ def test_non_official_or_incomplete_page_does_not_get_single_source_exception() 
 
     assert assessment.sufficient is False
     assert assessment.official_complete_source_id is None
+
+
+def test_current_list_intent_adds_execution_year_to_retrieval_query() -> None:
+    intent = classify_freshness_intent(
+        "今年的诺贝尔奖目前出炉了哪些", today=date(2026, 10, 9)
+    )
+
+    assert intent.target_year == 2026
+    assert intent.requires_current_evidence is True
+    assert intent.requires_list_evidence is True
+    assert build_retrieval_query("今年的诺贝尔奖目前出炉了哪些", intent).endswith(
+        "2026"
+    )
+
+
+def test_explicit_year_wins_over_execution_year() -> None:
+    intent = classify_freshness_intent("2025年诺贝尔奖名单", today=date(2026, 10, 9))
+
+    assert intent.target_year == 2025
