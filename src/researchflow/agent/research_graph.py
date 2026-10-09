@@ -208,8 +208,15 @@ class LangGraphResearchRunner:
             if step is None:
                 continue
             if result.success:
-                step.status = PlanStepStatus.COMPLETED
-                step.result_summary = f"{result.tool_name} completed"
+                index = agent.plan.steps.index(step)
+                agent.plan.steps[index] = type(step).model_validate(
+                    {
+                        **step.model_dump(),
+                        "status": PlanStepStatus.COMPLETED,
+                        "result_summary": f"{result.tool_name} completed",
+                        "error_message": None,
+                    }
+                )
             else:
                 index = agent.plan.steps.index(step)
                 agent.plan.steps[index] = type(step).model_validate(

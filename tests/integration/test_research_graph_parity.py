@@ -7,9 +7,43 @@ from researchflow.agent import (
     RulePlanner,
     StateSelector,
 )
+from researchflow.agent.graph import AgentGraphState, GraphNode
+from researchflow.agent.web import WebRulePlanner
+from researchflow.domain import AgentState, AgentStatus, PlanStepStatus, ToolResult
 from researchflow.execution import JsonlTraceRecorder, ToolExecutor
 from researchflow.tools import ToolContext, ToolRegistry
 from researchflow.tools.offline import create_offline_tools
+
+
+def test_langgraph_progress_clears_fetch_failure_after_later_success() -> None:
+    agent = AgentState(
+        run_id="mixed-fetch",
+        query="村上春树是谁",
+        status=AgentStatus.RUNNING,
+        plan=WebRulePlanner().create_plan("村上春树是谁"),
+        tool_results=[
+            ToolResult(
+                call_id="fetch-1",
+                tool_name="fetch_url",
+                success=False,
+                error_type="web_url_invalid",
+                error_message="URL must be a safe HTTP or HTTPS address",
+            ),
+            ToolResult(
+                call_id="fetch-2",
+                tool_name="fetch_url",
+                success=True,
+                output={"url": "https://example.test/profile"},
+            ),
+        ],
+    )
+    state = AgentGraphState(run_id="mixed-fetch", query="村上春树是谁", agent=agent)
+
+    LangGraphResearchRunner._project_plan_progress(GraphNode.READ_SOURCES, state)
+
+    step = next(item for item in agent.plan.steps if item.step_id == "fetch_url")
+    assert step.status is PlanStepStatus.COMPLETED
+    assert step.error_message is None
 
 
 def test_langgraph_research_runner_checkpoints_planning_and_retrieval(
