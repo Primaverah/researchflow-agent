@@ -473,3 +473,77 @@ def test_read_failure_tries_remaining_candidates_before_reporting_no_results(
 
     assert any(call.arguments.get("url", "").endswith("/5") for call in executor.calls)
     assert "https://example.com/5" in state.final_answer
+
+
+def test_current_complete_list_does_not_summarize_one_non_official_source(
+    tmp_path: Path,
+) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return make_result(
+                call,
+                output={
+                    "results": [
+                        {
+                            "url": "https://news.example/winners",
+                            "title": "2026 诺贝尔奖获奖者名单",
+                            "summary": "完整名单",
+                        }
+                    ]
+                },
+            )
+        if call.tool_name == "fetch_url":
+            return make_result(
+                call,
+                output={
+                    "url": "https://news.example/winners",
+                    "title": "2026 诺贝尔奖获奖者完整名单",
+                    "summary": "",
+                    "accessed_at": "2026-01-01T00:00:00Z",
+                    "content": "2026 年诺贝尔奖获奖者完整名单。",
+                },
+            )
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    state = GraphAgentRunner(
+        WebRulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        FakeExecutor(handler),
+        max_replans=0,
+    ).run("今年诺贝尔奖获奖者名单", make_context(tmp_path))
+
+    assert "证据门槛" in state.final_answer
+    assert "回答生成状态" not in state.final_answer
+
+
+def test_current_complete_list_accepts_one_configured_official_complete_source(
+    tmp_path: Path,
+) -> None:
+    runner = GraphAgentRunner(
+        WebRulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        FakeExecutor(lambda _: None),
+        official_domains=("official.example",),
+    )
+    state = AgentGraphState(
+        run_id="official",
+        query="今年诺贝尔奖获奖者名单",
+        web_sources=[
+            {
+                "url": "https://official.example/winners",
+                "title": "2026 诺贝尔奖获奖者完整名单",
+                "summary": "",
+                "accessed_at": "2026-01-01T00:00:00Z",
+                "content": "2026 年诺贝尔奖获奖者完整名单。",
+            }
+        ],
+    )
+
+    assessment = runner._assess_evidence(state, make_context(tmp_path))
+
+    assert assessment["evidence_status"] is EvidenceStatus.SUFFICIENT
+    assert assessment["official_complete_source_id"] == "https://official.example/winners"

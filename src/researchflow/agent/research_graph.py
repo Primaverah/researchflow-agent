@@ -39,9 +39,23 @@ class LangGraphResearchRunner:
         summarizer: ExtractiveSummarizer,
         executor: ToolExecutor,
         max_steps: int = 10,
+        candidate_limit: int = 10,
+        read_limit: int = 5,
+        max_concurrency: int = 3,
+        max_replans: int = 1,
+        official_domains: tuple[str, ...] = (),
     ) -> None:
         self._legacy = GraphAgentRunner(
-            planner, selector, summarizer, executor, max_steps=max_steps
+            planner,
+            selector,
+            summarizer,
+            executor,
+            max_steps=max_steps,
+            candidate_limit=candidate_limit,
+            read_limit=read_limit,
+            max_concurrency=max_concurrency,
+            max_replans=max_replans,
+            official_domains=official_domains,
         )
         self._max_steps = max_steps
         self._context: ToolContext | None = None
@@ -114,7 +128,7 @@ class LangGraphResearchRunner:
         graph.add_conditional_edges(
             "retrieve",
             self._route_after_retrieve,
-            {"read_sources": "read_sources", "finish": "finish"},
+            {"assess": "assess", "finish": "finish"},
         )
         graph.add_conditional_edges(
             "read_sources",
@@ -129,7 +143,12 @@ class LangGraphResearchRunner:
         graph.add_conditional_edges(
             "assess",
             self._route_after_assess,
-            {"replan": "replan", "synthesize": "synthesize", "finish": "finish"},
+            {
+                "read_sources": "read_sources",
+                "replan": "replan",
+                "synthesize": "synthesize",
+                "finish": "finish",
+            },
         )
         graph.add_conditional_edges(
             "replan",
@@ -246,18 +265,17 @@ class LangGraphResearchRunner:
         if node is GraphNode.PLAN:
             return GraphNode.RETRIEVE
         if node is GraphNode.RETRIEVE:
-            return GraphNode.READ_SOURCES
+            return GraphNode.ASSESS_EVIDENCE
         if node is GraphNode.READ_SOURCES:
-            return (
-                GraphNode.READ_SOURCES
-                if not (state.documents or state.web_sources)
-                and len(state.attempted_candidates) < len(state.candidates)
-                else GraphNode.ASSESS_EVIDENCE
-            )
+            return GraphNode.ASSESS_EVIDENCE
         if node is GraphNode.ASSESS_EVIDENCE:
             return (
                 GraphNode.SYNTHESIZE
-                if state.documents or state.web_sources
+                if state.evidence_status is EvidenceStatus.SUFFICIENT
+                else GraphNode.READ_SOURCES
+                if len(state.attempted_candidates) < len(state.candidates)
+                else GraphNode.SYNTHESIZE
+                if state.candidates
                 else GraphNode.REPLAN
                 if state.replans < state.max_replans
                 else GraphNode.SYNTHESIZE
@@ -291,7 +309,7 @@ class LangGraphResearchRunner:
         return self._continue_or_finish(value, "retrieve")
 
     def _route_after_retrieve(self, value: ResearchGraphState) -> str:
-        return self._continue_or_finish(value, "read_sources")
+        return self._continue_or_finish(value, "assess")
 
     def _route_after_replan(self, value: ResearchGraphState) -> str:
         return self._continue_or_finish(value, "retrieve")
@@ -332,13 +350,13 @@ class LangGraphResearchRunner:
         )
 
     def _assess(self, value: ResearchGraphState) -> ResearchGraphState:
-        def assess(state: AgentGraphState) -> dict[str, Any]:
-            patch = self._legacy._assess_evidence(state, self._context_or_raise())
-            if not patch and state.candidates:
-                patch = {"evidence_status": EvidenceStatus.PARTIAL}
-            return patch
-
-        return self._run_node(GraphNode.ASSESS_EVIDENCE, value, assess)
+        return self._run_node(
+            GraphNode.ASSESS_EVIDENCE,
+            value,
+            lambda state: self._legacy._assess_evidence(
+                state, self._context_or_raise()
+            ),
+        )
 
     def _read_sources(self, value: ResearchGraphState) -> ResearchGraphState:
         return self._run_node(
@@ -358,7 +376,11 @@ class LangGraphResearchRunner:
         state = self._state(value)
         if state.end_reason is not None:
             return "finish"
-        if state.documents or state.web_sources:
+        if state.evidence_status is EvidenceStatus.SUFFICIENT:
+            return "synthesize"
+        if len(state.attempted_candidates) < len(state.candidates):
+            return "read_sources"
+        if state.candidates:
             return "synthesize"
         if state.replans < state.max_replans:
             return "replan"
@@ -368,10 +390,6 @@ class LangGraphResearchRunner:
         state = self._state(value)
         if state.end_reason is not None:
             return "finish"
-        if not (state.documents or state.web_sources) and len(
-            state.attempted_candidates
-        ) < len(state.candidates):
-            return "read_sources"
         return "assess"
 
     def _synthesize(self, value: ResearchGraphState) -> ResearchGraphState:

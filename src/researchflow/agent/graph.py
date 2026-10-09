@@ -14,6 +14,7 @@ from typing import Any, Protocol
 
 from pydantic import Field
 
+from researchflow.agent.evidence_policy import evaluate_evidence_policy
 from researchflow.agent.planner import RulePlanner
 from researchflow.agent.selector import StateSelector
 from researchflow.agent.summarizer import ExtractiveSummarizer, SummaryGenerationStatus
@@ -82,6 +83,10 @@ class AgentGraphState(DomainModel):
     attempted_candidates: list[str] = Field(default_factory=list)
     evidence_status: EvidenceStatus | None = None
     evidence_gaps: list[str] = Field(default_factory=list)
+    evidence_policy: str | None = None
+    accepted_source_count: int = 0
+    required_source_count: int = 0
+    official_complete_source_id: str | None = None
     generation_mode: str | None = None
     generation_fallback_reason: str | None = None
     generation_error_type: str | None = None
@@ -117,6 +122,7 @@ class GraphAgentRunner:
         read_limit: int = 5,
         max_concurrency: int = 3,
         max_replans: int = 1,
+        official_domains: tuple[str, ...] = (),
     ) -> None:
         if min(max_steps, candidate_limit, read_limit, max_concurrency) < 1:
             raise ValueError("graph limits must be positive")
@@ -131,6 +137,7 @@ class GraphAgentRunner:
         self._read_limit = read_limit
         self._max_concurrency = max_concurrency
         self._max_replans = max_replans
+        self._official_domains = official_domains
         self._call_count = 0
 
     def run(
@@ -187,19 +194,19 @@ class GraphAgentRunner:
         if node is GraphNode.RETRIEVE:
             return GraphNode.ASSESS_EVIDENCE
         if node is GraphNode.ASSESS_EVIDENCE:
-            if state.candidates:
+            if state.evidence_status is EvidenceStatus.SUFFICIENT:
+                return GraphNode.SYNTHESIZE
+            if len(state.attempted_candidates) < len(state.candidates):
                 return GraphNode.READ_SOURCES
+            if state.candidates:
+                return GraphNode.SYNTHESIZE
             if state.replans < state.max_replans and state.end_reason is None:
                 return GraphNode.REPLAN
             return GraphNode.SYNTHESIZE
         if node is GraphNode.REPLAN:
             return GraphNode.RETRIEVE
         if node is GraphNode.READ_SOURCES:
-            if state.documents or state.web_sources:
-                return GraphNode.SYNTHESIZE
-            if len(state.attempted_candidates) < len(state.candidates):
-                return GraphNode.READ_SOURCES
-            return GraphNode.SYNTHESIZE
+            return GraphNode.ASSESS_EVIDENCE
         if node is GraphNode.SYNTHESIZE:
             return GraphNode.VERIFY
         if node is GraphNode.VERIFY:
@@ -261,21 +268,27 @@ class GraphAgentRunner:
     def _assess_evidence(
         self, state: AgentGraphState, _: ToolContext
     ) -> dict[str, Any]:
-        if state.documents or state.web_sources or state.rejected_sources:
-            if state.documents or state.web_sources:
-                return {"evidence_status": EvidenceStatus.SUFFICIENT}
-            return {
-                "evidence_status": EvidenceStatus.INSUFFICIENT,
-                "evidence_gaps": ["no_successful_relevant_source"],
-            }
-        if state.candidates:
-            return {}
-        if state.replans >= state.max_replans:
-            return {
-                "replan_reason": "insufficient_evidence",
-                "end_reason": GraphEndReason.NO_RESULTS,
-            }
-        return {"replan_reason": "insufficient_evidence"}
+        assessment = evaluate_evidence_policy(
+            state.query,
+            [*state.documents, *state.web_sources],
+            official_domains=self._official_domains,
+        )
+        unread_candidates = len(state.attempted_candidates) < len(state.candidates)
+        if assessment.sufficient:
+            status = EvidenceStatus.SUFFICIENT
+        elif state.documents or state.web_sources or unread_candidates:
+            status = EvidenceStatus.PARTIAL
+        else:
+            status = EvidenceStatus.INSUFFICIENT
+        return {
+            "evidence_status": status,
+            "evidence_gaps": list(assessment.gaps),
+            "evidence_policy": assessment.policy.name,
+            "accepted_source_count": assessment.accepted_source_count,
+            "required_source_count": assessment.required_source_count,
+            "official_complete_source_id": assessment.official_complete_source_id,
+            "replan_reason": None if assessment.sufficient else "insufficient_evidence",
+        }
 
     def _replan(self, state: AgentGraphState, context: ToolContext) -> dict[str, Any]:
         agent = self._agent(state)
@@ -350,7 +363,7 @@ class GraphAgentRunner:
         self, state: AgentGraphState, context: ToolContext
     ) -> dict[str, Any]:
         agent = self._agent(state)
-        if not state.documents and not state.web_sources:
+        if state.evidence_status is not EvidenceStatus.SUFFICIENT:
             agent.final_answer = self._read_failure_report(state)
             return {
                 "agent": agent,
@@ -378,6 +391,11 @@ class GraphAgentRunner:
 
     @staticmethod
     def _read_failure_report(state: AgentGraphState) -> str:
+        result_message = (
+            "没有成功读取任何候选来源，因此无法提供经来源验证的事实性回答。"
+            if not (state.documents or state.web_sources)
+            else "已读取来源不足以满足当前问题的证据门槛，因此未生成事实性总结。"
+        )
         candidates = [
             "- "
             f"{candidate.title} — {candidate.locator}\n"
@@ -401,7 +419,7 @@ class GraphAgentRunner:
                 "",
                 "## 结果",
                 "",
-                "没有成功读取任何候选来源，因此无法提供经来源验证的事实性回答。",
+                result_message,
                 "",
                 "## 搜索候选（未读取正文）",
                 "",
@@ -722,6 +740,10 @@ class GraphAgentRunner:
                 {
                     "status": state.evidence_status.value,
                     "gaps": state.evidence_gaps,
+                    "policy": state.evidence_policy,
+                    "accepted_source_count": state.accepted_source_count,
+                    "required_source_count": state.required_source_count,
+                    "official_complete_source_id": state.official_complete_source_id,
                 },
             )
         if node is GraphNode.SYNTHESIZE:

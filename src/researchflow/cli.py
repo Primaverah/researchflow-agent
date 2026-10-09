@@ -192,15 +192,24 @@ def _allow_llm_fallback() -> bool:
     )
 
 
-def _graph_options() -> dict[str, int]:
+def _graph_options() -> dict[str, object]:
     """Load bounded graph settings, leaving validation to the runner."""
-    graph = load_project_config().get("graph", {})
+    config = load_project_config()
+    graph = config.get("graph", {})
     if not isinstance(graph, dict):
-        return {}
+        graph = {}
     names = ("candidate_limit", "read_limit", "max_concurrency", "max_replans")
-    return {
+    options: dict[str, object] = {
         name: value for name in names if isinstance((value := graph.get(name)), int)
     }
+    web = config.get("web", {})
+    if isinstance(web, dict) and isinstance(web.get("official_domains"), list):
+        domains = web["official_domains"]
+        if all(isinstance(domain, str) and domain.strip() for domain in domains):
+            options["official_domains"] = tuple(
+                domain.strip().lower() for domain in domains
+            )
+    return options
 
 
 def _session_database(output_dir: Path) -> Path:
@@ -321,6 +330,7 @@ def _run_workflow(
             summarizer,
             executor,
             max_steps=max_steps,
+            **_graph_options(),
         ).run(
             query,
             context,
