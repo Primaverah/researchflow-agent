@@ -13,6 +13,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import Field
 
+from researchflow.agent.query_understanding import (
+    QueryUnderstanding,
+    build_deterministic_understanding,
+    is_language_only_request,
+    requested_answer_language,
+)
 from researchflow.domain.models import DomainModel
 
 
@@ -43,6 +49,7 @@ class SessionGraphState(DomainModel):
     answer_target: str = ""
     answer_language: str = ""
     required_facets: list[str] = Field(default_factory=list)
+    query_understanding: QueryUnderstanding | None = None
     rewritten_query: str = ""
     prior_query: str = ""
     turn_count: int = 0
@@ -263,6 +270,7 @@ class SessionStateData(TypedDict, total=False):
     answer_target: str
     answer_language: str
     required_facets: list[str]
+    query_understanding: dict[str, Any]
     rewritten_query: str
     prior_query: str
     turn_count: int
@@ -344,72 +352,47 @@ class LangGraphSessionRunner:
     @staticmethod
     def _contextualize(state: dict[str, Any]) -> dict[str, Any]:
         latest = state.get("current_input", "").strip()
-        subject = state.get("resolved_subject", "").strip()
-        intent = LangGraphSessionRunner._intent(latest)
-        requested_language = LangGraphSessionRunner._requested_answer_language(latest)
-        language_only = requested_language is not None and (
-            LangGraphSessionRunner._is_language_only_request(latest)
+        requested_language = requested_answer_language(latest)
+        language_only = requested_language is not None and is_language_only_request(
+            latest
         )
         prior_target = (
             state.get("answer_target", "").strip()
             or state.get("standalone_query", "").strip()
             or state.get("prior_query", "").strip()
         )
-        if not subject:
-            subject = LangGraphSessionRunner._explicit_subject(
-                state.get("prior_query", "").strip()
-            )
-        explicit_subject = (
-            ""
-            if language_only
-            or intent == "continuation"
-            or LangGraphSessionRunner._has_reference(latest)
-            else LangGraphSessionRunner._explicit_subject(latest)
-        )
-        if explicit_subject:
-            subject = explicit_subject
-
-        if language_only and prior_target:
-            standalone = prior_target
-        elif LangGraphSessionRunner._has_reference(latest) and subject:
-            standalone = LangGraphSessionRunner._replace_reference(latest, subject)
-        else:
-            standalone = latest
-
-        if intent == "compiler" and subject:
-            standalone = f"{subject}都使用哪些常见编译器"
-            facets = ["common_compilers"]
-        elif intent == "representative_works" and subject:
-            standalone = f"{subject}的代表电影作品有哪些"
-            facets = ["representative_works"]
-        elif intent == "age" and subject:
-            standalone = f"{subject}的出生日期及截至当前日期的年龄".strip()
-            facets = ["birth_date", "age"]
-        elif intent == "latest_update" and subject:
-            standalone = f"{subject}最近什么时候更新"
-            facets = ["latest_update"]
-        elif intent == "continuation" and subject:
-            standalone = f"{subject}更多信息"
-            facets = []
-        else:
-            facets = []
         answer_language = (
             requested_language
             or state.get("answer_language", "").strip()
             or LangGraphSessionRunner._language_of(latest)
         )
+        understanding = build_deterministic_understanding(
+            latest,
+            prior_subject=state.get("resolved_subject", ""),
+            prior_query=(
+                state.get("standalone_query", "").strip()
+                or state.get("prior_query", "").strip()
+            ),
+            prior_answer_target=prior_target,
+            answer_language=answer_language,
+        )
         return {
-            "resolved_subject": subject,
-            "intent": intent,
-            "standalone_query": standalone,
+            "resolved_subject": understanding.resolved_subject,
+            "intent": understanding.intent,
+            "standalone_query": understanding.standalone_query,
             "answer_target": (
-                prior_target if language_only and prior_target else standalone
+                prior_target
+                if language_only and prior_target
+                else understanding.standalone_query
             ),
             "answer_language": answer_language,
-            "rewritten_query": standalone,
-            "required_facets": facets,
+            "rewritten_query": understanding.standalone_query,
+            "required_facets": understanding.required_facets,
+            "query_understanding": understanding.model_dump(mode="json"),
             "turn_count": state.get("turn_count", 0) + 1,
-            "interrupt_status": "awaiting_clarification" if not standalone else "",
+            "interrupt_status": (
+                "awaiting_clarification" if not understanding.standalone_query else ""
+            ),
         }
 
     @staticmethod

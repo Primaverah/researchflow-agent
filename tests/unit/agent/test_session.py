@@ -92,6 +92,21 @@ def test_compiler_follow_up_uses_resolved_subject_not_previous_question(
     assert seen[-1] == "C和C++都使用哪些常见编译器"
 
 
+def test_session_persists_deterministic_query_understanding(tmp_path: Path) -> None:
+    runner = LangGraphSessionRunner(
+        tmp_path / "checkpoints.sqlite3", research=lambda query: query
+    )
+
+    runner.chat("C和C++有什么区别", session_id="languages")
+    runner.chat("它们的发展历史", session_id="languages")
+
+    state = runner.get_state("languages")
+    understanding = state["query_understanding"]
+    assert understanding["current_input"] == "它们的发展历史"
+    assert understanding["standalone_query"] == "C和C++的发展历史"
+    assert understanding["required_facets"] == ["C", "C++", "history"]
+
+
 def test_person_follow_ups_keep_subject_and_change_required_facets(
     tmp_path: Path,
 ) -> None:
