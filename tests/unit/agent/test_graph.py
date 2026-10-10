@@ -461,6 +461,70 @@ def test_current_nobel_list_rejects_non_nobel_candidate_before_read(
     assert fetched == ["https://example.test/nobel"]
 
 
+def test_retrieve_uses_each_bounded_query_from_understanding(tmp_path: Path) -> None:
+    executor = FakeExecutor(
+        lambda call: make_result(
+            call,
+            output={"hits": []}
+            if call.tool_name == "search_documents"
+            else {"results": []},
+        )
+    )
+    runner = GraphAgentRunner(
+        WebRulePlanner(), StateSelector(), ExtractiveSummarizer(), executor
+    )
+    understanding = build_deterministic_understanding(
+        "它们的发展历史",
+        prior_subject="C和C++",
+        prior_query="C和C++有什么区别",
+        prior_answer_target="C和C++有什么区别",
+        answer_language="zh",
+    ).model_copy(
+        update={
+            "search_queries": [
+                "C和C++的发展历史",
+                "C语言的发展历史",
+                "C++的发展历史",
+            ]
+        }
+    )
+    state = AgentGraphState(
+        run_id="graph",
+        query=understanding.standalone_query,
+        understanding=understanding,
+    )
+    context = make_context(tmp_path)
+    state = state.model_copy(update=runner._initialize(state, context))
+    state = state.model_copy(update=runner._plan(state, context))
+
+    runner._retrieve(state, context)
+
+    assert [
+        call.arguments["query"]
+        for call in executor.calls
+        if call.tool_name == "web_search"
+    ] == understanding.search_queries
+
+
+def test_body_admission_requires_all_resolved_subjects() -> None:
+    understanding = build_deterministic_understanding(
+        "它们的发展历史",
+        prior_subject="C和C++",
+        prior_query="C和C++有什么区别",
+        prior_answer_target="C和C++有什么区别",
+        answer_language="zh",
+    )
+
+    reason = GraphAgentRunner._evidence_rejection_reason(
+        "C和C++的发展历史",
+        "C和C++的发展历史",
+        "C 语言的历史可以追溯到 1970 年代。",
+        understanding=understanding,
+    )
+
+    assert reason == "missing_subject_coverage"
+
+
 def test_person_profile_requires_biographical_evidence_not_a_name_mention() -> None:
     unrelated = GraphAgentRunner._evidence_rejection_reason(
         "村上春树是谁",

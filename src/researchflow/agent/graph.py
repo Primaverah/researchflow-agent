@@ -257,28 +257,23 @@ class GraphAgentRunner:
         return {"agent": agent}
 
     def _retrieve(self, state: AgentGraphState, context: ToolContext) -> dict[str, Any]:
+        queries = (
+            state.understanding.search_queries
+            if state.understanding is not None
+            else [
+                build_retrieval_query(
+                    state.query, classify_freshness_intent(state.query)
+                )
+            ]
+        )
         calls = [
-            (
-                "search_documents",
-                {
-                    "query": build_retrieval_query(
-                        state.query, classify_freshness_intent(state.query)
-                    ),
-                    "limit": self._candidate_limit,
-                },
-            )
+            ("search_documents", {"query": query, "limit": self._candidate_limit})
+            for query in queries
         ]
         if self._has_web_plan(state):
-            calls.append(
-                (
-                    "web_search",
-                    {
-                        "query": build_retrieval_query(
-                            state.query, classify_freshness_intent(state.query)
-                        ),
-                        "limit": self._candidate_limit,
-                    },
-                )
+            calls.extend(
+                ("web_search", {"query": query, "limit": self._candidate_limit})
+                for query in queries
             )
         outcomes = self._parallel_calls(state, context, calls)
         candidates: list[GraphCandidate] = []
@@ -364,7 +359,10 @@ class GraphAgentRunner:
             if call.tool_name == "read_document":
                 document = ReadDocumentOutput.model_validate(result.output)
                 rejection = self._evidence_rejection_reason(
-                    state.query, document.title, document.content
+                    state.query,
+                    document.title,
+                    document.content,
+                    understanding=state.understanding,
                 )
                 if rejection is None:
                     documents.append(document)
@@ -373,7 +371,10 @@ class GraphAgentRunner:
             else:
                 source = WebSource.model_validate(result.output)
                 rejection = self._evidence_rejection_reason(
-                    state.query, source.title, source.content
+                    state.query,
+                    source.title,
+                    source.content,
+                    understanding=state.understanding,
                 )
                 if rejection is None:
                     web_sources.append(source)
@@ -548,8 +549,28 @@ class GraphAgentRunner:
         )
 
     @staticmethod
-    def _evidence_rejection_reason(query: str, title: str, content: str) -> str | None:
+    def _evidence_rejection_reason(
+        query: str,
+        title: str,
+        content: str,
+        *,
+        understanding: QueryUnderstanding | None = None,
+    ) -> str | None:
         text = f"{title}\n{content}".casefold()
+        if understanding is not None:
+            if any(
+                subject.casefold() not in content.casefold()
+                for subject in subject_terms(understanding.resolved_subject)
+            ):
+                return "missing_subject_coverage"
+            facet_reason = GraphAgentRunner._candidate_rejection_reason(
+                GraphCandidate(
+                    source_type="body", locator="body", title=title, summary=content
+                ),
+                understanding,
+            )
+            if facet_reason is not None:
+                return facet_reason
         intent = classify_freshness_intent(query)
         if (
             intent.requires_current_evidence
