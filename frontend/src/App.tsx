@@ -4,9 +4,12 @@ import {
   getRun,
   getSession,
   listSessions,
+  deleteSession,
+  renameSession,
   resumeTurn,
   startTurn,
   type RunSnapshot,
+  type SessionListItem,
   type SourceSnapshot,
 } from "./api";
 import { useRunEvents } from "./useRunEvents";
@@ -77,8 +80,10 @@ function compactId(value: string) {
 export function App({ run, runId }: AppProps) {
   const [loadedRun, setLoadedRun] = useState<RunSnapshot | undefined>(run);
   const [loadError, setLoadError] = useState("");
-  const [sessions, setSessions] = useState<string[]>([]);
+  const [sessions, setSessions] = useState<SessionListItem[]>([]);
   const [sessionId, setSessionId] = useState("");
+  const [sessionName, setSessionName] = useState("");
+  const [renaming, setRenaming] = useState(false);
   const [sessionRuns, setSessionRuns] = useState<RunSnapshot[]>([]);
   const [message, setMessage] = useState("");
   const snapshot = loadedRun ?? run;
@@ -94,10 +99,17 @@ export function App({ run, runId }: AppProps) {
     listSessions()
       .then((items) => {
         setSessions(items);
-        setSessionId((current) => current || items[0] || crypto.randomUUID());
+        setSessionId((current) => current || items[0]?.session_id || crypto.randomUUID());
       })
       .catch(() => setLoadError("无法读取会话列表"));
   }, []);
+
+  async function refreshSessionHistory(targetSessionId = sessionId) {
+    if (!targetSessionId) return;
+    const session = await getSession(targetSessionId);
+    setSessionRuns(session.runs);
+    setLoadedRun(session.runs.at(-1));
+  }
 
   useRunEvents(
     snapshot?.run_id,
@@ -105,6 +117,7 @@ export function App({ run, runId }: AppProps) {
       if (snapshot) {
         getRun(snapshot.run_id)
           .then(setLoadedRun)
+          .then(() => refreshSessionHistory())
           .catch(() => setLoadError("实时更新失败，正在使用轮询状态"));
       }
     },
@@ -112,6 +125,7 @@ export function App({ run, runId }: AppProps) {
       if (snapshot) {
         getRun(snapshot.run_id)
           .then(setLoadedRun)
+          .then(() => refreshSessionHistory())
           .catch(() => setLoadError("无法读取运行状态"));
       }
     },
@@ -129,9 +143,9 @@ export function App({ run, runId }: AppProps) {
           : await startTurn(sessionId, content);
       setLoadedRun(nextRun);
       setMessage("");
-      setSessions((items) =>
-        items.includes(sessionId) ? items : [...items, sessionId],
-      );
+      await refreshSessionHistory(sessionId);
+      const items = await listSessions();
+      setSessions(items);
     } catch {
       setLoadError("无法启动研究");
     }
@@ -142,6 +156,7 @@ export function App({ run, runId }: AppProps) {
     setLoadedRun(undefined);
     setSessionRuns([]);
     setLoadError("");
+    setRenaming(false);
   }
 
   async function selectSession(nextSessionId: string) {
@@ -158,6 +173,38 @@ export function App({ run, runId }: AppProps) {
     }
   }
 
+  async function saveSessionName() {
+    if (!sessionId || !sessionName.trim()) return;
+    try {
+      const updated = await renameSession(sessionId, sessionName);
+      setSessions((items) =>
+        items.map((item) => (item.session_id === sessionId ? updated : item)),
+      );
+      setRenaming(false);
+      setLoadError("");
+    } catch {
+      setLoadError("无法重命名会话");
+    }
+  }
+
+  async function removeSession() {
+    if (!sessionId || !window.confirm("确定删除此会话及其历史记录吗？")) return;
+    try {
+      await deleteSession(sessionId);
+      const fresh = crypto.randomUUID();
+      setSessions((items) => items.filter((item) => item.session_id !== sessionId));
+      setSessionId(fresh);
+      setLoadedRun(undefined);
+      setSessionRuns([]);
+      setRenaming(false);
+      setLoadError("");
+    } catch {
+      setLoadError("无法删除会话");
+    }
+  }
+
+  const activeSession = sessions.find((item) => item.session_id === sessionId);
+
   return (
     <main className="app-shell">
       <aside className="panel session-panel">
@@ -169,20 +216,34 @@ export function App({ run, runId }: AppProps) {
           新建会话
         </button>
         {sessionId ? (
-          <p className="current-session" title={sessionId}>
-            当前会话：{compactId(sessionId)}
-          </p>
+          <>
+            <p className="current-session" title={sessionId}>
+              当前会话：{activeSession?.display_name ?? compactId(sessionId)}
+            </p>
+            <div className="session-actions">
+              {renaming ? (
+                <>
+                  <input aria-label="会话名称" value={sessionName} onChange={(event) => setSessionName(event.target.value)} />
+                  <button type="button" onClick={() => void saveSessionName()}>保存会话名称</button>
+                </>
+              ) : (
+                <button type="button" aria-label="重命名会话" onClick={() => { setSessionName(activeSession?.display_name ?? ""); setRenaming(true); }}>重命名</button>
+              )}
+              <button type="button" aria-label="删除会话" onClick={() => void removeSession()}>删除</button>
+            </div>
+          </>
         ) : null}
         <ul className="session-list">
           {sessions.map((item) => (
-            <li key={item}>
+            <li key={item.session_id}>
               <button
                 type="button"
-                onClick={() => void selectSession(item)}
-                title={item}
-                className={item === sessionId ? "selected" : ""}
+                onClick={() => void selectSession(item.session_id)}
+                title={item.session_id}
+                className={item.session_id === sessionId ? "selected" : ""}
               >
-                {compactId(item)}
+                {item.display_name}
+                <small aria-label={`会话 ID：${item.session_id}`}>{compactId(item.session_id)}</small>
               </button>
             </li>
           ))}

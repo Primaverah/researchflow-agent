@@ -28,6 +28,12 @@ export type SessionSnapshot = {
   runs: RunSnapshot[];
 };
 
+export type SessionListItem = {
+  session_id: string;
+  display_name: string;
+  updated_at?: string;
+};
+
 export type RunEvent = {
   eventId: number;
   type: string;
@@ -46,12 +52,36 @@ export async function getRun(runId: string): Promise<RunSnapshot> {
   return (await response.json()) as RunSnapshot;
 }
 
-export async function listSessions(): Promise<string[]> {
+export async function listSessions(): Promise<SessionListItem[]> {
   const response = await fetch("/api/sessions");
   if (!response.ok) {
     throw new Error(`Unable to load sessions (${response.status})`);
   }
-  return (await response.json()) as string[];
+  return (await response.json()) as SessionListItem[];
+}
+
+export async function renameSession(
+  sessionId: string,
+  displayName: string,
+): Promise<SessionListItem> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ display_name: displayName }),
+  });
+  if (!response.ok) {
+    throw new Error(`Unable to rename session (${response.status})`);
+  }
+  return (await response.json()) as SessionListItem;
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new Error(`Unable to delete session (${response.status})`);
+  }
 }
 
 export async function getSession(sessionId: string): Promise<SessionSnapshot> {
