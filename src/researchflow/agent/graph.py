@@ -125,7 +125,7 @@ class GraphAgentRunner:
         selector: StateSelector,
         summarizer: ExtractiveSummarizer,
         executor: ToolExecutor,
-        max_steps: int = 10,
+        max_steps: int = 13,
         candidate_limit: int = 10,
         read_limit: int = 5,
         max_concurrency: int = 3,
@@ -210,8 +210,6 @@ class GraphAgentRunner:
                 return GraphNode.SYNTHESIZE
             if GraphAgentRunner._has_read_budget(state):
                 return GraphNode.READ_SOURCES
-            if state.candidates:
-                return GraphNode.SYNTHESIZE
             if state.replans < state.max_replans and state.end_reason is None:
                 return GraphNode.REPLAN
             return GraphNode.SYNTHESIZE
@@ -283,11 +281,23 @@ class GraphAgentRunner:
                 candidates.extend(self._local_candidates(result.output))
             if result.success and call.tool_name == "web_search":
                 candidates.extend(self._web_candidates(result.output))
+        pre_read_rejections = [
+            f"{candidate.locator} — {reason}"
+            for candidate in candidates
+            if state.understanding is not None
+            and (
+                reason := self._candidate_rejection_reason(
+                    candidate, state.understanding
+                )
+            )
+            is not None
+        ]
         return {
             "agent": self._agent(state),
             "candidates": self._deduplicate(
                 candidates, state.query, state.understanding
             ),
+            "rejected_sources": [*state.rejected_sources, *pre_read_rejections],
         }
 
     def _assess_evidence(
@@ -299,6 +309,12 @@ class GraphAgentRunner:
             official_domains=self._official_domains,
         )
         unread_candidates = len(state.attempted_candidates) < len(state.candidates)
+        rejected_gaps = [
+            item.rpartition(" — ")[2]
+            for item in state.rejected_sources
+            if item.rpartition(" — ")[2].startswith("missing_required_facet:")
+        ]
+        gaps = list(dict.fromkeys([*assessment.gaps, *rejected_gaps]))
         if assessment.sufficient:
             status = EvidenceStatus.SUFFICIENT
         elif state.documents or state.web_sources or unread_candidates:
@@ -307,7 +323,7 @@ class GraphAgentRunner:
             status = EvidenceStatus.INSUFFICIENT
         return {
             "evidence_status": status,
-            "evidence_gaps": list(assessment.gaps),
+            "evidence_gaps": gaps,
             "evidence_policy": assessment.policy.name,
             "accepted_source_count": assessment.accepted_source_count,
             "required_source_count": assessment.required_source_count,
@@ -319,7 +335,37 @@ class GraphAgentRunner:
         agent = self._agent(state)
         agent.plan = self._planner.create_plan(state.query)
         self._record_decision(agent, self._planner, context)
-        return {"agent": agent, "replans": state.replans + 1}
+        understanding = state.understanding
+        if understanding is None:
+            return {"agent": agent, "replans": state.replans + 1}
+        facets = [
+            gap.removeprefix("missing_required_facet:")
+            for gap in state.evidence_gaps
+            if gap.startswith("missing_required_facet:")
+        ]
+        labels = {
+            "winners": "获奖者",
+            "nobel_prize": "诺贝尔奖",
+            "common_compilers": "编译器",
+            "representative_works": "代表作",
+            "birth_date": "出生日期",
+            "age": "年龄",
+            "latest_update": "最新更新",
+            "history": "发展历史",
+        }
+        suffix = " ".join(labels.get(facet, facet) for facet in facets[:2])
+        query = " ".join(
+            part
+            for part in (understanding.standalone_query, suffix, "官方来源")
+            if part
+        )
+        refined = understanding.model_copy(update={"search_queries": [query]})
+        return {
+            "agent": agent,
+            "replans": state.replans + 1,
+            "understanding": refined,
+            "replan_reason": "targeted_facet_retry",
+        }
 
     def _read_sources(
         self, state: AgentGraphState, context: ToolContext
@@ -839,6 +885,16 @@ class GraphAgentRunner:
                         "source_id": candidate.locator,
                         "title": candidate.title,
                         "kind": candidate.source_type,
+                    },
+                )
+            for rejected in state.rejected_sources[len(previous.rejected_sources) :]:
+                source_id, separator, reason = rejected.rpartition(" — ")
+                self._emit(
+                    event_sink,
+                    "source_rejected",
+                    {
+                        "source_id": source_id if separator else rejected,
+                        "reason": reason if separator else "rejected",
                     },
                 )
         if node is GraphNode.READ_SOURCES:

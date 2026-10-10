@@ -39,7 +39,7 @@ class LangGraphResearchRunner:
         selector: StateSelector,
         summarizer: ExtractiveSummarizer,
         executor: ToolExecutor,
-        max_steps: int = 10,
+        max_steps: int = 13,
         candidate_limit: int = 10,
         read_limit: int = 5,
         max_concurrency: int = 3,
@@ -280,8 +280,6 @@ class LangGraphResearchRunner:
                 if state.evidence_status is EvidenceStatus.SUFFICIENT
                 else GraphNode.READ_SOURCES
                 if self._legacy._has_read_budget(state)
-                else GraphNode.SYNTHESIZE
-                if state.candidates
                 else GraphNode.REPLAN
                 if state.replans < state.max_replans
                 else GraphNode.SYNTHESIZE
@@ -386,8 +384,6 @@ class LangGraphResearchRunner:
             return "synthesize"
         if self._legacy._has_read_budget(state):
             return "read_sources"
-        if state.candidates:
-            return "synthesize"
         if state.replans < state.max_replans:
             return "replan"
         return "synthesize"

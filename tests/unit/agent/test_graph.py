@@ -461,6 +461,46 @@ def test_current_nobel_list_rejects_non_nobel_candidate_before_read(
     assert fetched == ["https://example.test/nobel"]
 
 
+def test_pre_read_rejection_is_exposed_with_its_reason(tmp_path: Path) -> None:
+    executor = FakeExecutor(
+        lambda call: make_result(
+            call,
+            output={"hits": []}
+            if call.tool_name == "search_documents"
+            else {
+                "results": [
+                    {"url": "https://example.test/microsoft", "title": "Microsoft 2026"}
+                ]
+            },
+        )
+    )
+    understanding = build_deterministic_understanding(
+        "今年的诺贝尔奖获得者有哪些",
+        prior_subject="",
+        prior_query="",
+        prior_answer_target="",
+        answer_language="zh",
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+
+    GraphAgentRunner(
+        WebRulePlanner(), StateSelector(), ExtractiveSummarizer(), executor
+    ).run(
+        understanding.standalone_query,
+        make_context(tmp_path),
+        understanding=understanding,
+        event_sink=lambda event_type, data: events.append((event_type, data)),
+    )
+
+    assert (
+        "source_rejected",
+        {
+            "source_id": "https://example.test/microsoft",
+            "reason": "missing_required_facet:nobel_prize",
+        },
+    ) in events
+
+
 def test_retrieve_uses_each_bounded_query_from_understanding(tmp_path: Path) -> None:
     executor = FakeExecutor(
         lambda call: make_result(
@@ -552,6 +592,59 @@ def test_graph_trace_records_safe_query_understanding(tmp_path: Path) -> None:
         and event.get("required_facets") == ["C", "C++", "history"]
         for event in executor.events
     )
+
+
+def test_replan_replaces_queries_with_subject_preserving_facet_query(
+    tmp_path: Path,
+) -> None:
+    runner = GraphAgentRunner(
+        WebRulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        FakeExecutor(lambda call: make_result(call, output={"results": []})),
+    )
+    understanding = build_deterministic_understanding(
+        "今年的诺贝尔奖获得者有哪些",
+        prior_subject="",
+        prior_query="",
+        prior_answer_target="",
+        answer_language="zh",
+    )
+    state = AgentGraphState(
+        run_id="graph",
+        query=understanding.standalone_query,
+        understanding=understanding,
+        evidence_gaps=["missing_required_facet:winners"],
+    )
+    state = state.model_copy(update=runner._initialize(state, make_context(tmp_path)))
+
+    update = runner._replan(state, make_context(tmp_path))
+
+    assert update["replans"] == 1
+    assert update["understanding"].search_queries == [
+        "今年的诺贝尔奖获得者有哪些 获奖者 官方来源"
+    ]
+
+
+def test_insufficient_evidence_routes_to_single_replan_after_reads() -> None:
+    state = AgentGraphState(
+        run_id="graph",
+        query="question",
+        current_node=GraphNode.ASSESS_EVIDENCE,
+        candidates=[
+            {
+                "source_type": "web",
+                "locator": "https://example.test/source",
+                "title": "source",
+            }
+        ],
+        attempted_candidates=["https://example.test/source"],
+        evidence_status=EvidenceStatus.INSUFFICIENT,
+        max_replans=1,
+        replans=0,
+    )
+
+    assert GraphAgentRunner.route(state) is GraphNode.REPLAN
 
 
 def test_person_profile_requires_biographical_evidence_not_a_name_mention() -> None:
