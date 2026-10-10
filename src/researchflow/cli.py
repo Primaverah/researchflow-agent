@@ -2,6 +2,7 @@
 
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -15,6 +16,7 @@ from researchflow.agent import (
     AgentRunner,
     ExtractiveSummarizer,
     GraphAgentRunner,
+    LangGraphResearchRunner,
     LangGraphSessionRunner,
     LLMPlanner,
     LLMSelector,
@@ -22,10 +24,12 @@ from researchflow.agent import (
     RulePlanner,
     SessionCatalog,
     SessionResearchRequest,
+    SessionResearchResult,
     StateSelector,
     WebRulePlanner,
     WebStateSelector,
 )
+from researchflow.application import ResearchService, ResumeTurn, RunStatus, StartTurn
 from researchflow.config import load_local_secrets, load_project_config
 from researchflow.domain import AgentState, AgentStatus, ToolResult
 from researchflow.evaluation import evaluate_retriever
@@ -160,6 +164,15 @@ def _resolve_query(query: str | None) -> str:
 
 
 def _create_context(documents_dir: Path, output_dir: Path) -> ToolContext:
+    _validate_context_paths(documents_dir, output_dir)
+    return ToolContext(
+        working_directory=documents_dir,
+        output_directory=output_dir,
+        run_id=uuid4().hex,
+    )
+
+
+def _validate_context_paths(documents_dir: Path, output_dir: Path) -> None:
     if not documents_dir.exists():
         _input_error("文档目录不存在")
     if not documents_dir.is_dir():
@@ -170,11 +183,6 @@ def _create_context(documents_dir: Path, output_dir: Path) -> ToolContext:
         _input_error("输出目录无法创建")
     if not output_dir.is_dir():
         _input_error("输出路径不是目录")
-    return ToolContext(
-        working_directory=documents_dir,
-        output_directory=output_dir,
-        run_id=uuid4().hex,
-    )
 
 
 def _allow_llm_fallback() -> bool:
@@ -185,15 +193,39 @@ def _allow_llm_fallback() -> bool:
     )
 
 
-def _graph_options() -> dict[str, int]:
+def _graph_options() -> dict[str, object]:
     """Load bounded graph settings, leaving validation to the runner."""
-    graph = load_project_config().get("graph", {})
+    config = load_project_config()
+    graph = config.get("graph", {})
     if not isinstance(graph, dict):
-        return {}
+        graph = {}
     names = ("candidate_limit", "read_limit", "max_concurrency", "max_replans")
-    return {
+    options: dict[str, object] = {
         name: value for name in names if isinstance((value := graph.get(name)), int)
     }
+    web = config.get("web", {})
+    if isinstance(web, dict) and isinstance(web.get("official_domains"), list):
+        domains = web["official_domains"]
+        if all(isinstance(domain, str) and domain.strip() for domain in domains):
+            options["official_domains"] = tuple(
+                domain.strip().lower() for domain in domains
+            )
+    return options
+
+
+def _resolved_max_steps(override: int | None = None) -> int:
+    """Resolve a graph-node budget that leaves room for configured replans."""
+    if override is not None:
+        return override
+    config = load_project_config()
+    graph = config.get("graph", {})
+    max_replans = graph.get("max_replans", 1) if isinstance(graph, dict) else 1
+    if not isinstance(max_replans, int) or max_replans < 0:
+        max_replans = 1
+    minimum = 10 + (3 * max_replans)
+    agent = config.get("agent", {})
+    configured = agent.get("max_steps") if isinstance(agent, dict) else None
+    return max(configured, minimum) if isinstance(configured, int) else minimum
 
 
 def _session_database(output_dir: Path) -> Path:
@@ -209,21 +241,29 @@ def _session_runner(
     allowed_domains: tuple[str, ...],
     llm_overrides: dict[str, object] | None,
 ) -> LangGraphSessionRunner:
-    def research(request: SessionResearchRequest) -> str:
+    def research(request: SessionResearchRequest) -> SessionResearchResult:
+        events: list[tuple[str, dict[str, object]]] = []
+
+        def collect_event(event_type: str, data: dict[str, object]) -> None:
+            events.append((event_type, data))
+
         state, _ = _run_workflow(
             request.standalone_query,
             documents_dir,
             output_dir,
-            10,
+            _resolved_max_steps(),
             agent_mode,
             enable_web,
             allowed_domains,
             llm_overrides,
-            "graph",
+            "langgraph",
             answer_target=request.answer_target,
             answer_language=request.answer_language,
+            event_sink=collect_event,
         )
-        return state.final_answer or "未找到相关文档。"
+        return SessionResearchResult.from_events(
+            state.final_answer or "未找到相关文档。", events
+        )
 
     return LangGraphSessionRunner(
         _session_database(output_dir),
@@ -247,10 +287,12 @@ def _run_workflow(
     enable_web: bool = False,
     allowed_domains: tuple[str, ...] = (),
     llm_overrides: dict[str, object] | None = None,
-    orchestrator: str = "loop",
+    orchestrator: str = "langgraph",
     *,
     answer_target: str | None = None,
     answer_language: str = "",
+    event_sink: Callable[[str, dict[str, object]], None] | None = None,
+    thread_id: str | None = None,
 ) -> tuple[AgentState, ToolContext]:
     context = _create_context(documents_dir, output_dir)
     registry = ToolRegistry()
@@ -304,6 +346,26 @@ def _run_workflow(
             )
     executor = ToolExecutor(registry, JsonlTraceRecorder())
     runner: AgentOrchestrator
+    if orchestrator == "langgraph":
+        graph_state = LangGraphResearchRunner(
+            _session_database(output_dir),
+            planner,
+            selector,
+            summarizer,
+            executor,
+            max_steps=max_steps,
+            **_graph_options(),
+        ).run(
+            query,
+            context,
+            thread_id=thread_id or context.run_id,
+            answer_target=answer_target,
+            answer_language=answer_language,
+            event_sink=event_sink,
+        )
+        if graph_state.agent is None:
+            raise RuntimeError("LangGraph research finished without an agent state")
+        return graph_state.agent, context
     if orchestrator == "graph":
         runner = GraphAgentRunner(
             planner,
@@ -325,6 +387,7 @@ def _run_workflow(
                 context,
                 answer_target=answer_target,
                 answer_language=answer_language,
+                event_sink=event_sink,
             ),
             context,
         )
@@ -519,17 +582,20 @@ def run_agent(
         typer.Option("--output-dir", help="Directory for notes and traces."),
     ] = Path("output"),
     max_steps: Annotated[
-        int,
+        int | None,
         typer.Option("--max-steps", help="Maximum number of agent actions."),
-    ] = 10,
+    ] = None,
     agent_mode: Annotated[
         str,
         typer.Option("--agent-mode", help="Agent mode: rule (default) or llm."),
     ] = "rule",
     orchestrator: Annotated[
         str,
-        typer.Option("--orchestrator", help="Orchestrator: loop (default) or graph."),
-    ] = "loop",
+        typer.Option(
+            "--orchestrator",
+            help="Orchestrator: langgraph (default), graph, or loop.",
+        ),
+    ] = "langgraph",
     enable_web: Annotated[
         bool,
         typer.Option("--enable-web", help="Enable optional Tavily web sources."),
@@ -547,25 +613,48 @@ def run_agent(
     ] = False,
 ) -> None:
     """Run one bounded local research workflow."""
-    if max_steps < 1:
+    if max_steps is not None and max_steps < 1:
         _input_error("--max-steps 必须大于或等于 1")
     if agent_mode not in {"rule", "llm"}:
         _input_error("--agent-mode 必须为 rule 或 llm")
-    if orchestrator not in {"loop", "graph"}:
-        _input_error("--orchestrator 必须为 loop 或 graph")
+    if orchestrator not in {"loop", "graph", "langgraph"}:
+        _input_error("--orchestrator 必须为 loop、graph 或 langgraph")
     resolved_query = _resolve_query(query)
+    resolved_max_steps = _resolved_max_steps(max_steps)
     try:
-        state, context = _run_workflow(
-            resolved_query,
-            documents_dir,
-            output_dir,
-            max_steps,
-            agent_mode,
-            enable_web,
-            tuple(allowed_domain or ()),
-            ctx.obj["llm_overrides"],
-            orchestrator,
+        _validate_context_paths(documents_dir, output_dir)
+        execution: dict[str, tuple[AgentState, ToolContext]] = {}
+
+        def workflow(
+            message: str,
+            session_id: str,
+            event_sink: Callable[[str, dict[str, object]], None] | None = None,
+        ) -> AgentState:
+            state, context = _run_workflow(
+                message,
+                documents_dir,
+                output_dir,
+                resolved_max_steps,
+                agent_mode,
+                enable_web,
+                tuple(allowed_domain or ()),
+                ctx.obj["llm_overrides"],
+                orchestrator,
+                event_sink=event_sink,
+                thread_id=session_id,
+            )
+            execution["result"] = (state, context)
+            return state
+
+        service = ResearchService(_session_database(output_dir), workflow=workflow)
+        service.start_turn(
+            StartTurn(
+                session_id=f"run-{uuid4().hex}",
+                message=resolved_query,
+                idempotency_key=uuid4().hex,
+            )
         )
+        state, context = execution["result"]
     except WebSearchConfigurationError as exc:
         _input_error(str(exc))
     except LLMDependencyError as exc:
@@ -586,6 +675,76 @@ def run_agent(
         save_result is not None and not save_result.success
     ):
         raise typer.Exit(code=1)
+
+
+@app.command("serve")
+def serve(
+    ctx: typer.Context,
+    documents_dir: Annotated[Path, typer.Option("--documents-dir")] = Path(
+        "examples/documents"
+    ),
+    output_dir: Annotated[Path, typer.Option("--output-dir")] = Path("output"),
+    host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", min=1, max=65535)] = 8000,
+    enable_web: Annotated[
+        bool, typer.Option("--enable-web", help="Enable configured Web search.")
+    ] = False,
+    agent_mode: Annotated[
+        str, typer.Option("--agent-mode", help="Research agent mode: rule or llm.")
+    ] = "rule",
+    allowed_domain: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--allowed-domain",
+            help="Allowed web source domain; repeat to allow multiple.",
+        ),
+    ] = None,
+) -> None:
+    """Serve the local Web API on a loopback address."""
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        _input_error("--host 只能使用本地回环地址")
+    if agent_mode not in {"rule", "llm"}:
+        _input_error("--agent-mode 必须为 rule 或 llm")
+    _validate_context_paths(documents_dir, output_dir)
+    from researchflow.api.server import create_local_app
+
+    def workflow(
+        message: str,
+        session_id: str,
+        event_sink: Callable[[str, dict[str, object]], None] | None = None,
+    ) -> AgentState:
+        state, _context = _run_workflow(
+            message,
+            documents_dir,
+            output_dir,
+            _resolved_max_steps(),
+            agent_mode,
+            enable_web,
+            tuple(allowed_domain or ()),
+            ctx.obj["llm_overrides"],
+            "langgraph",
+            event_sink=event_sink,
+            thread_id=session_id,
+        )
+        return state
+
+    import uvicorn
+
+    session_runner = _session_runner(
+        documents_dir,
+        output_dir,
+        agent_mode=agent_mode,
+        enable_web=enable_web,
+        allowed_domains=tuple(allowed_domain or ()),
+        llm_overrides=ctx.obj["llm_overrides"],
+    )
+    uvicorn.run(
+        create_local_app(
+            _session_database(output_dir), workflow, session_runner=session_runner
+        ),
+        host=host,
+        port=port,
+    )
 
 
 @app.command("chat")
@@ -622,13 +781,33 @@ def chat(
     resolved_session = session_id or uuid4().hex
     try:
         content = message if message is not None else typer.prompt("消息")
-        result = session_runner.chat(content, session_id=resolved_session)
-        if result.interrupted:
-            result = session_runner.resume(
-                resolved_session, typer.prompt(result.prompt or "澄清")
+        service = ResearchService(
+            _session_database(output_dir),
+            workflow=lambda query, _: AgentState(
+                run_id="session-adapter",
+                query=query,
+                status=AgentStatus.COMPLETED,
+                final_answer="",
+            ),
+            session_runner=session_runner,
+        )
+        result = service.start_turn(
+            StartTurn(
+                session_id=resolved_session,
+                message=content,
+                idempotency_key=uuid4().hex,
+            )
+        )
+        if result.status is RunStatus.WAITING_FOR_INPUT:
+            result = service.resume_turn(
+                ResumeTurn(
+                    session_id=resolved_session,
+                    answer=typer.prompt(result.interrupt_prompt or "澄清"),
+                    idempotency_key=uuid4().hex,
+                )
             )
         typer.echo(f"session_id: {resolved_session}")
-        typer.echo(terminal_safe_text(result.response))
+        typer.echo(terminal_safe_text(result.answer or ""))
     except WebSearchConfigurationError as exc:
         _input_error(str(exc))
     except LLMDependencyError as exc:
@@ -652,5 +831,13 @@ def delete_session(
     output_dir: Annotated[Path, typer.Option("--output-dir")] = Path("output"),
 ) -> None:
     """Delete one exact session and its checkpoints."""
-    if not SessionCatalog(_session_database(output_dir)).delete(session_id):
+    service = ResearchService(
+        _session_database(output_dir),
+        workflow=lambda message, _: AgentState(
+            run_id="session-delete", query=message, status=AgentStatus.COMPLETED
+        ),
+    )
+    try:
+        service.delete_session(session_id)
+    except KeyError:
         _input_error("会话不存在")

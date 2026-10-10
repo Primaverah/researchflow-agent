@@ -15,7 +15,7 @@ allowed_domains = []
 
 [agent]
 mode = "llm"
-max_steps = 10
+max_steps = 13
 allow_fallback = true
 
 [graph]

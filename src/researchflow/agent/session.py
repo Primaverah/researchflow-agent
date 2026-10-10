@@ -2,7 +2,7 @@
 
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, TypedDict
@@ -99,6 +99,10 @@ class SessionCatalog:
                     )
         return deleted > 0
 
+    def delete_exact(self, session_id: str) -> bool:
+        """Explicit alias used by application lifecycle deletion."""
+        return self.delete(session_id)
+
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._database)
 
@@ -107,6 +111,132 @@ class ChatResult(DomainModel):
     response: str = ""
     interrupted: bool = False
     prompt: str | None = None
+    research_result: "SessionResearchResult | None" = None
+
+
+class SessionSource(DomainModel):
+    """Display-safe source metadata carried from one research turn."""
+
+    source_id: str
+    title: str
+    url: str = ""
+    kind: str
+    read: bool
+    reason: str | None = None
+
+
+class SessionResearchResult(DomainModel):
+    """A JSON-safe research projection kept with a checkpointed session turn."""
+
+    response: str = ""
+    candidates: list[SessionSource] = Field(default_factory=list)
+    read_sources: list[SessionSource] = Field(default_factory=list)
+    rejected_sources: list[SessionSource] = Field(default_factory=list)
+    evidence_status: str | None = None
+    evidence_gaps: list[str] = Field(default_factory=list)
+    evidence_policy: str | None = None
+    accepted_source_count: int = 0
+    required_source_count: int = 0
+    official_complete_source_id: str | None = None
+    generation_mode: str | None = None
+    end_reason: str | None = None
+    node_steps: int | None = None
+    max_steps: int | None = None
+
+    @classmethod
+    def from_events(
+        cls,
+        response: str,
+        events: list[tuple[str, Mapping[str, object]]],
+    ) -> "SessionResearchResult":
+        candidates: list[SessionSource] = []
+        read_sources: list[SessionSource] = []
+        rejected_sources: list[SessionSource] = []
+        assessment: dict[str, object] = {}
+        generation_mode: str | None = None
+        completion: dict[str, object] = {}
+        for event_type, data in events:
+            if event_type == "candidate_selected":
+                cls._append_event_source(candidates, data, read=False)
+            elif event_type == "source_read":
+                cls._append_event_source(read_sources, data, read=True)
+            elif event_type == "source_rejected":
+                cls._append_event_source(rejected_sources, data, read=False)
+            elif event_type == "evidence_assessed":
+                assessment = dict(data)
+            elif event_type == "generation_status":
+                mode = data.get("mode")
+                generation_mode = mode if isinstance(mode, str) else generation_mode
+            elif event_type == "run_completed":
+                completion = dict(data)
+        status = assessment.get("status")
+        gaps = assessment.get("gaps")
+        policy = assessment.get("policy")
+        official_source_id = assessment.get("official_complete_source_id")
+        return cls(
+            response=response,
+            candidates=candidates,
+            read_sources=read_sources,
+            rejected_sources=rejected_sources,
+            evidence_status=status if isinstance(status, str) else None,
+            evidence_gaps=(
+                list(gaps)
+                if isinstance(gaps, list)
+                and all(isinstance(item, str) for item in gaps)
+                else []
+            ),
+            evidence_policy=policy if isinstance(policy, str) else None,
+            accepted_source_count=cls._event_count(assessment, "accepted_source_count"),
+            required_source_count=cls._event_count(assessment, "required_source_count"),
+            official_complete_source_id=(
+                official_source_id
+                if isinstance(official_source_id, str) or official_source_id is None
+                else None
+            ),
+            generation_mode=generation_mode,
+            end_reason=(
+                completion["end_reason"]
+                if isinstance(completion.get("end_reason"), str)
+                else None
+            ),
+            node_steps=cls._event_optional_count(completion, "node_steps"),
+            max_steps=cls._event_optional_count(completion, "max_steps"),
+        )
+
+    @staticmethod
+    def _append_event_source(
+        sources: list[SessionSource], data: Mapping[str, object], *, read: bool
+    ) -> None:
+        source_id = data.get("source_id")
+        if not isinstance(source_id, str) or any(
+            source.source_id == source_id for source in sources
+        ):
+            return
+        title = data.get("title")
+        kind = data.get("kind")
+        reason = data.get("reason")
+        sources.append(
+            SessionSource(
+                source_id=source_id,
+                title=title if isinstance(title, str) else source_id,
+                url=(
+                    source_id if source_id.startswith(("http://", "https://")) else ""
+                ),
+                kind=kind if isinstance(kind, str) else "web",
+                read=read,
+                reason=reason if isinstance(reason, str) else None,
+            )
+        )
+
+    @staticmethod
+    def _event_count(data: Mapping[str, object], key: str) -> int:
+        value = data.get(key)
+        return value if isinstance(value, int) and value >= 0 else 0
+
+    @staticmethod
+    def _event_optional_count(data: Mapping[str, object], key: str) -> int | None:
+        value = data.get(key)
+        return value if isinstance(value, int) and value >= 0 else None
 
 
 class SessionResearchRequest(DomainModel):
@@ -138,6 +268,7 @@ class SessionStateData(TypedDict, total=False):
     turn_count: int
     interrupt_status: str
     response: str
+    research_result: dict[str, Any]
 
 
 class LangGraphSessionRunner:
@@ -146,9 +277,11 @@ class LangGraphSessionRunner:
     def __init__(
         self,
         database: Path,
-        research: Callable[[str], str | None],
+        research: Callable[[str], str | SessionResearchResult | None],
         *,
-        research_with_context: Callable[[SessionResearchRequest], str | None]
+        research_with_context: Callable[
+            [SessionResearchRequest], str | SessionResearchResult | None
+        ]
         | None = None,
     ) -> None:
         self._database = database
@@ -392,9 +525,9 @@ class LangGraphSessionRunner:
 
     def _research_node(self, state: dict[str, Any]) -> dict[str, Any]:
         if self._research_with_context is None:
-            answer = self._research(state["standalone_query"])
+            result = self._research(state["standalone_query"])
         else:
-            answer = self._research_with_context(
+            result = self._research_with_context(
                 SessionResearchRequest(
                     current_input=state.get("current_input", ""),
                     standalone_query=state["standalone_query"],
@@ -409,7 +542,21 @@ class LangGraphSessionRunner:
                     required_facets=state.get("required_facets", []),
                 )
             )
-        return {"response": answer or "未找到相关文档。"}
+        research_result = self._normalize_research_result(result)
+        return {
+            "response": research_result.response,
+            "research_result": research_result.model_dump(mode="json"),
+        }
+
+    @staticmethod
+    def _normalize_research_result(
+        result: str | SessionResearchResult | None,
+    ) -> SessionResearchResult:
+        if isinstance(result, SessionResearchResult):
+            return result.model_copy(
+                update={"response": result.response or "未找到相关文档。"}
+            )
+        return SessionResearchResult(response=result or "未找到相关文档。")
 
     @staticmethod
     def _respond(state: dict[str, Any]) -> dict[str, Any]:
@@ -435,4 +582,12 @@ class LangGraphSessionRunner:
         if interrupts:
             value = interrupts[0].value
             return ChatResult(interrupted=True, prompt=str(value))
-        return ChatResult(response=result.get("response", ""))
+        research_result = result.get("research_result")
+        return ChatResult(
+            response=result.get("response", ""),
+            research_result=(
+                SessionResearchResult.model_validate(research_result)
+                if isinstance(research_result, dict)
+                else None
+            ),
+        )

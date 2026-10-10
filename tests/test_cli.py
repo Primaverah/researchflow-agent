@@ -1,6 +1,7 @@
 """Tests for the command-line interface."""
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from typer.testing import CliRunner
 
 from researchflow import __version__, cli
 from researchflow.cli import app
+from researchflow.domain import AgentState, AgentStatus
 from researchflow.llm import (
     BaseLLMProvider,
     LLMConfigurationError,
@@ -172,11 +174,32 @@ def test_run_help_lists_modes_and_options() -> None:
     assert "--verbose" in result.stdout
 
 
+def test_serve_help_documents_loopback_options() -> None:
+    result = runner.invoke(app, ["serve", "--help"])
+
+    assert result.exit_code == 0
+    assert "--host" in result.stdout
+    assert "--port" in result.stdout
+    assert "--enable-web" in result.stdout
+    assert "--agent-mode" in result.stdout
+
+
 def test_version_is_available() -> None:
     result = runner.invoke(app, ["--version"])
 
     assert result.exit_code == 0
     assert result.stdout.strip() == f"researchflow {__version__}"
+
+
+def test_run_records_completed_application_run(cli_paths) -> None:
+    documents, output = cli_paths
+
+    result = invoke_run(documents, output)
+
+    assert result.exit_code == 0
+    with sqlite3.connect(output / "sessions" / "checkpoints.sqlite3") as database:
+        rows = database.execute("SELECT status FROM researchflow_runs").fetchall()
+    assert rows == [("completed",)]
 
 
 def test_llm_check_uses_structured_fake_provider(
@@ -496,6 +519,113 @@ def test_graph_orchestrator_runs_offline(cli_paths) -> None:
     assert result.exit_code == 0
     assert "最终摘要" in result.stdout
     assert any((output / "traces").glob("*.jsonl"))
+
+
+def test_default_run_uses_checkpointed_langgraph_research(cli_paths) -> None:
+    documents, output = cli_paths
+
+    result = invoke_run(documents, output)
+
+    assert result.exit_code == 0
+    with sqlite3.connect(output / "sessions" / "checkpoints.sqlite3") as database:
+        checkpoint_count = database.execute(
+            "SELECT COUNT(*) FROM checkpoints"
+        ).fetchone()[0]
+        payload = database.execute("SELECT payload FROM researchflow_runs").fetchone()[
+            0
+        ]
+    assert checkpoint_count > 0
+    snapshot = json.loads(payload)
+    assert snapshot["evidence"]["candidates"][0]["source_id"] == "agent.md"
+    assert snapshot["evidence"]["read_sources"][0]["source_id"] == "agent.md"
+
+
+def test_graph_run_projects_evidence_into_persisted_application_snapshot(
+    cli_paths,
+) -> None:
+    documents, output = cli_paths
+
+    result = invoke_run(documents, output, "--orchestrator", "graph")
+
+    assert result.exit_code == 0
+    with sqlite3.connect(output / "sessions" / "checkpoints.sqlite3") as database:
+        payload = database.execute("SELECT payload FROM researchflow_runs").fetchone()[
+            0
+        ]
+        event_types = [
+            json.loads(row[0])["type"]
+            for row in database.execute(
+                "SELECT payload FROM researchflow_events ORDER BY event_id"
+            )
+        ]
+    snapshot = json.loads(payload)
+    assert snapshot["evidence"]["candidates"][0]["source_id"] == "agent.md"
+    assert snapshot["evidence"]["read_sources"][0]["source_id"] == "agent.md"
+    assert "source_read" in event_types
+    assert event_types.count("run_completed") == 1
+
+
+def test_session_runner_projects_research_events_into_session_result(
+    cli_paths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    documents, output = cli_paths
+
+    def workflow(*_args, **kwargs):
+        event_sink = kwargs["event_sink"]
+        event_sink(
+            "candidate_selected",
+            {
+                "source_id": "https://example.test/news",
+                "title": "官方新闻",
+                "kind": "web",
+            },
+        )
+        event_sink(
+            "source_read",
+            {
+                "source_id": "https://example.test/news",
+                "title": "官方新闻",
+                "kind": "web",
+            },
+        )
+        event_sink(
+            "evidence_assessed",
+            {
+                "status": "sufficient",
+                "gaps": [],
+                "policy": "overview",
+                "accepted_source_count": 1,
+                "required_source_count": 1,
+                "official_complete_source_id": None,
+            },
+        )
+        event_sink("generation_status", {"mode": "llm_grounded"})
+        return (
+            AgentState(
+                run_id="session-run",
+                query="问题",
+                status=AgentStatus.COMPLETED,
+                final_answer="基于官方新闻的回答",
+            ),
+            object(),
+        )
+
+    monkeypatch.setattr(cli, "_run_workflow", workflow)
+    session_runner = cli._session_runner(
+        documents,
+        output,
+        agent_mode="rule",
+        enable_web=True,
+        allowed_domains=(),
+        llm_overrides=None,
+    )
+    result = session_runner.chat("问题", session_id="session-evidence")
+    session_runner.close()
+
+    assert result.research_result is not None
+    assert result.research_result.read_sources[0].title == "官方新闻"
+    assert result.research_result.evidence_status == "sufficient"
+    assert result.research_result.generation_mode == "llm_grounded"
 
 
 def test_invalid_max_steps_does_not_start_interactive_prompt() -> None:

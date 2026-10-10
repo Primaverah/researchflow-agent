@@ -137,6 +137,63 @@ def test_graph_reports_safe_summary_generation_status(tmp_path: Path) -> None:
     assert synthesis_event["generation_mode"] == "extractive"
 
 
+def test_graph_event_sink_emits_safe_source_metadata_not_body(tmp_path: Path) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(
+                call, output={"hits": [{"path": "evidence.md", "title": "Evidence"}]}
+            )
+        if call.tool_name == "read_document":
+            return make_result(
+                call,
+                output={
+                    "path": "evidence.md",
+                    "title": "Evidence",
+                    "content": "This is source-only content.",
+                    "char_count": 28,
+                },
+            )
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    events: list[tuple[str, dict[str, object]]] = []
+    GraphAgentRunner(
+        RulePlanner(), StateSelector(), ExtractiveSummarizer(), FakeExecutor(handler)
+    ).run(
+        "proof",
+        make_context(tmp_path),
+        event_sink=lambda event_type, data: events.append((event_type, data)),
+    )
+
+    source_event = next(
+        data for event_type, data in events if event_type == "source_read"
+    )
+    assert source_event["content_length"] == 28
+    assert "content" not in source_event
+    assert "This is source-only content." not in str(events)
+
+
+def test_graph_completion_event_includes_budget_diagnostics(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    GraphAgentRunner(
+        RulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        FakeExecutor(lambda call: make_result(call, output={"hits": []})),
+        max_steps=2,
+    ).run(
+        "limit",
+        make_context(tmp_path),
+        event_sink=lambda event_type, data: events.append((event_type, data)),
+    )
+
+    completed = next(
+        data for event_type, data in events if event_type == "run_completed"
+    )
+    assert completed["end_reason"] == "max_steps"
+    assert completed["node_steps"] == 3
+    assert completed["max_steps"] == 2
+
+
 def test_graph_deduplicates_candidates_and_uses_only_successful_reads(
     tmp_path: Path,
 ) -> None:
@@ -393,9 +450,10 @@ def test_all_web_reads_failed_returns_candidate_links_and_failure_reasons(
     assert "没有成功读取任何候选来源" in state.final_answer
     assert "https://example.com/jackie" in state.final_answer
     assert "expected failure" in state.final_answer
+    assert "Search snippet only" not in state.final_answer
 
 
-def test_read_failure_tries_remaining_candidates_before_reporting_no_results(
+def test_read_limit_bounds_total_source_reads_before_insufficient_report(
     tmp_path: Path,
 ) -> None:
     def handler(call: ToolCall) -> ToolResult:
@@ -436,5 +494,118 @@ def test_read_failure_tries_remaining_candidates_before_reporting_no_results(
         max_steps=12,
     ).run("成龙是谁", make_context(tmp_path))
 
-    assert any(call.arguments.get("url", "").endswith("/5") for call in executor.calls)
-    assert "https://example.com/5" in state.final_answer
+    fetched = [call for call in executor.calls if call.tool_name == "fetch_url"]
+    assert len(fetched) == 5
+    assert not any(call.arguments["url"].endswith("/5") for call in fetched)
+    assert "没有成功读取任何候选来源" in state.final_answer
+
+
+def test_current_complete_list_does_not_summarize_one_non_official_source(
+    tmp_path: Path,
+) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return make_result(
+                call,
+                output={
+                    "results": [
+                        {
+                            "url": "https://news.example/winners",
+                            "title": "2026 诺贝尔奖获奖者名单",
+                            "summary": "只可用于内部排序的搜索摘要",
+                        }
+                    ]
+                },
+            )
+        if call.tool_name == "fetch_url":
+            return make_result(
+                call,
+                output={
+                    "url": "https://news.example/winners",
+                    "title": "2026 诺贝尔奖获奖者完整名单",
+                    "summary": "",
+                    "accessed_at": "2026-01-01T00:00:00Z",
+                    "content": "2026 年诺贝尔奖获奖者完整名单。",
+                },
+            )
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    state = GraphAgentRunner(
+        WebRulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        FakeExecutor(handler),
+        max_replans=0,
+    ).run("今年诺贝尔奖获奖者名单", make_context(tmp_path))
+
+    assert "证据门槛" in state.final_answer
+    assert "回答生成状态" not in state.final_answer
+    assert "只可用于内部排序的搜索摘要" not in state.final_answer
+
+
+def test_current_list_rejects_old_year_body_and_reads_current_candidate_first(
+    tmp_path: Path,
+) -> None:
+    runner = GraphAgentRunner(
+        WebRulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        FakeExecutor(lambda _: None),
+    )
+    candidates = runner._web_candidates(
+        {
+            "results": [
+                {"url": "https://example.test/2022", "title": "2022 诺贝尔奖"},
+                {"url": "https://example.test/2026", "title": "2026 诺贝尔奖"},
+            ]
+        }
+    )
+
+    ordered = runner._deduplicate(candidates, "今年的诺贝尔奖目前出炉了哪些")
+
+    assert [candidate.locator for candidate in ordered] == [
+        "https://example.test/2026",
+        "https://example.test/2022",
+    ]
+    assert (
+        runner._evidence_rejection_reason(
+            "今年的诺贝尔奖目前出炉了哪些",
+            "2022 诺贝尔奖",
+            "2022 年诺贝尔奖获奖者名单。",
+        )
+        == "stale_for_current_query"
+    )
+
+
+def test_current_complete_list_accepts_one_configured_official_complete_source(
+    tmp_path: Path,
+) -> None:
+    runner = GraphAgentRunner(
+        WebRulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        FakeExecutor(lambda _: None),
+        official_domains=("official.example",),
+    )
+    state = AgentGraphState(
+        run_id="official",
+        query="今年诺贝尔奖获奖者名单",
+        web_sources=[
+            {
+                "url": "https://official.example/winners",
+                "title": "2026 诺贝尔奖获奖者完整名单",
+                "summary": "",
+                "accessed_at": "2026-01-01T00:00:00Z",
+                "content": "2026 年诺贝尔奖获奖者完整名单。",
+            }
+        ],
+    )
+
+    assessment = runner._assess_evidence(state, make_context(tmp_path))
+
+    assert assessment["evidence_status"] is EvidenceStatus.SUFFICIENT
+    assert (
+        assessment["official_complete_source_id"] == "https://official.example/winners"
+    )

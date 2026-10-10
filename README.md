@@ -1,463 +1,116 @@
 # ResearchFlow Agent
 
-ResearchFlow Agent is an offline, rule-driven agent for technical research over
-local documents. It searches and reads local files, produces an extractive
-summary, saves a Markdown report, and records parseable execution traces. The
-project focuses on explicit tool calls, validated state, filesystem safety, and a
-bounded execution loop. Rule mode is fully offline; an optional, configured LLM
-mode uses the same local tools and is not intended to be a production research
-platform.
+ResearchFlow 是一个本地优先、带证据门槛的研究助手。它可以检索本地文档，可选地
+搜索并安全读取网页；只有成功读取且通过相关性检查的正文才可用于事实性回答。
 
-## Features
+默认研究执行器是带 SQLite checkpoint 的 LangGraph 图。它与单独的多轮会话图共同
+支持持久会话、澄清中断与恢复。项目仍是单机工具：服务默认只监听回环地址，不能作为
+云端、多用户或生产级服务使用。
 
-- Default rule-based planning and state-driven tool selection
-- Optional structured LLM planning, selection, and source-constrained summaries
-- Bounded, synchronous Agent execution loop
-- Deterministic keyword search over local documents
-- Strict UTF-8 Markdown and text document reading
-- Extractive summaries sourced only from successfully read documents
-- Markdown report output
-- Pydantic validation for domain models and tool inputs
-- Safe-path enforcement for document reads, report writes, and trace files
-- Structured tool success and failure results
-- One independently parseable JSON object per tool call in JSONL traces
-- Direct and one-shot interactive CLI modes
-- Optional verbose execution details without full document or note arguments
-- Fully offline rule mode without an API key
+## 主要能力
 
-## Non-goals
+- 本地 Markdown/Text 检索、可选 Tavily 网页候选和受 SSRF 保护的 HTML 正文读取。
+- `SUFFICIENT`、`PARTIAL`、`INSUFFICIENT` 证据状态；没有成功读取的相关正文时不会
+  把模型常识包装成研究结论。
+- 可选 OpenAI-compatible LLM 进行规划、选择和基于来源的总结；失败时明确显示
+  `extractive_fallback` 与脱敏原因。
+- `researchflow chat` 的跨进程会话记忆：保留当前输入、主体、检索独立问题、意图、
+  所需证据分面和语言偏好。
+- 空问题会在工具或文件副作用之前中断；恢复采用相同 session/thread ID。
+- JSONL 工具 trace、Markdown 报告、SQLite 运行快照/事件和本地 React Web 控制台。
 
-The project intentionally does not provide:
+详细的数据流、证据规则、记忆与恢复约束见
+[架构文档](docs/architecture.md)，本地控制台的启动方法见
+[操作文档](docs/local-web-console.md)。
 
-- External paper or web search
-- Database persistence
-- MCP or Agent Skills integration
-- Distributed or production deployment
-- Conversational memory, multi-turn chat, or multiple agents
+## 安装
 
-## Architecture
+需要 Python 3.11、[uv](https://docs.astral.sh/uv/) 和 Node.js（仅 Web 控制台）。
 
-```mermaid
-flowchart TD
-    CLI[Typer CLI] --> Runner[AgentRunner]
-    Runner --> Planner[RulePlanner]
-    Runner --> Selector[StateSelector]
-    Runner --> Summarizer[ExtractiveSummarizer]
-    Runner --> Executor[ToolExecutor]
-    Executor --> Registry[ToolRegistry]
-    Registry --> Search[search_documents]
-    Registry --> Read[read_document]
-    Registry --> Save[save_note]
-    Search --> Documents[(Local documents)]
-    Read --> Documents
-    Save --> Report[Markdown report]
-    Executor --> Recorder[JsonlTraceRecorder]
-    Recorder --> Trace[JSONL trace]
+```powershell
+uv sync --frozen --extra llm --extra ui
+npm --prefix frontend ci
 ```
 
-One run follows these steps:
+`--extra llm` 与 `--extra ui` 允许使用可选的 LLM 和本地 API；纯离线命令只需
+`uv sync --frozen`。
 
-1. The CLI accepts a research question and directory options.
-2. `RulePlanner` creates the fixed search, read, summarize, and save plan.
-3. `StateSelector` chooses the next action from the current Agent state.
-4. `ToolExecutor` validates and executes real tool calls and records their traces.
-5. `ExtractiveSummarizer` builds a report from successfully read documents only.
-6. `save_note` writes the report as Markdown.
-7. The Agent stops when it completes, fails, or reaches the configured step limit.
+若运行“今年/最新 + 获奖名单/完整列表”类问题，默认至少需要两个不同的已读取正文来源。
+只有显式配置的 HTTPS 官方完整名单页可使用单来源例外：
 
-## Requirements
-
-- Python 3.11
-- [uv](https://docs.astral.sh/uv/)
-- Git for cloning the repository only; Git is not a runtime dependency
-- No API key
-- No network connection during Agent execution
-
-## Installation
-
-```bash
-git clone https://github.com/Primaverah/researchflow-agent.git
-cd researchflow-agent
-uv sync --frozen
+```toml
+# researchflow.toml
+[web]
+official_domains = ["example-official.org"]
 ```
 
-## Quick Start
+## 命令行快速开始
 
-```bash
+```powershell
 uv run researchflow run "tool calling"
+uv run researchflow chat "C和C++有什么区别" --session-id demo
+uv run researchflow chat "它们都用什么编译器" --session-id demo
 ```
 
-The default configuration is:
+`run` 默认使用 `--orchestrator langgraph`。保留 `--orchestrator graph` 和
+`--orchestrator loop` 仅用于兼容/诊断，不是默认路径。
+
+要启用 Web 检索，设置 `RESEARCHFLOW_SEARCH_API_KEY` 后显式传入 `--enable-web`：
+
+```powershell
+uv run researchflow chat "村上春树是谁" --session-id author-demo --enable-web
+```
+
+要启用 LLM，总结和规划配置放在 `.env.local` 或进程环境中：
+`RESEARCHFLOW_LLM_API_KEY`、`RESEARCHFLOW_LLM_BASE_URL`、
+`RESEARCHFLOW_LLM_MODEL` 和可选的 `RESEARCHFLOW_LLM_TIMEOUT`。密钥不会写进
+报告、JSONL 或控制台诊断。
+
+```powershell
+uv run researchflow chat "什么是 RAG？" --session-id rag-demo --agent-mode llm --enable-web
+```
+
+使用空输入时，`chat` 会请求澄清并在同一次命令中提示恢复答案。会话可列出和精确删除：
+
+```powershell
+uv run researchflow sessions list
+uv run researchflow sessions delete demo
+```
+
+## 输出与诊断
+
+默认输出根目录为 `output/`：
 
 ```text
-documents directory: examples/documents
-output directory: output
-maximum steps: 10
+output/notes/<run_id>.md                 # UTF-8 报告
+output/traces/<run_id>.jsonl             # 工具调用与安全诊断 trace
+output/sessions/checkpoints.sqlite3      # LangGraph 与应用运行快照
 ```
 
-## CLI Usage
+搜索摘要只作为候选信息；`已读取正文` 才是可用证据。网页抓取失败、低相关来源和证据
+缺口都会在报告、trace 或本地控制台中明确呈现。Windows 终端不能编码的字符会被安全
+替代，文件内容仍为 UTF-8。
 
-### Optional LLM configuration check
+## 验证
 
-Install the optional client with `uv sync --frozen --extra llm`, then create
-`.env.local` and set `RESEARCHFLOW_LLM_API_KEY`, `RESEARCHFLOW_LLM_BASE_URL`,
-`RESEARCHFLOW_LLM_MODEL`, and `RESEARCHFLOW_LLM_TIMEOUT`. Run
-`uv run researchflow llm-check` to validate a structured response. Keys are
-read only from the environment and are never recorded in traces or output.
-
-Run the local workflow with structured LLM decisions:
-
-```bash
-uv run researchflow run "tool calling" --agent-mode llm
-```
-
-`rule` is the default mode and remains fully offline. In `llm` mode, missing
-configuration or invalid structured model output falls back to the equivalent
-rule component. A missing optional client is a startup error (rather than a
-silent fallback): run `uv sync --frozen --extra llm`. LLM decisions can select
-only the existing local search, read, and save tools. JSONL traces record sanitized decision component/model/token
-usage metadata, never prompts, model output, or API keys.
-
-### Optional web sources
-
-Set `RESEARCHFLOW_SEARCH_API_KEY` to enable Tavily search, then opt in per run:
-
-```bash
-uv run researchflow run "tool calling" --enable-web
-```
-
-Only ordinary public HTTP/HTTPS HTML pages are fetched. Local/private addresses,
-non-HTML responses, PDFs, redirects to unsafe hosts, and oversized pages are
-rejected. Reports number only successfully searched and fetched web sources;
-traces never contain API keys or response bodies.
-
-Evaluate the deterministic bilingual retrieval baselines:
-
-```bash
-uv run researchflow evaluate --retriever all --output evaluation.json
-```
-
-The evaluation reports Recall@1, Recall@3, Recall@5, and MRR separately for
-Chinese, English, and all queries. The compact original dataset evaluates only
-same-language retrieval: Chinese queries rank Chinese documents and English
-queries rank English documents. The JSON result is written with UTF-8 when
-`--output` is supplied.
-
-Embedding and hybrid baselines are optional. Install the local multilingual
-model runtime with `uv sync --extra embedding`, then run
-`researchflow evaluate --retriever embedding` or `--retriever hybrid`.
-`--embedding-model` selects the sentence-transformers model and is loaded only
-when those retrievers are selected. Hybrid retrieval combines BM25 and embedding
-rankings with reciprocal-rank fusion; it remains same-language only.
-
-Run with a positional research question:
-
-```bash
-uv run researchflow run "tool calling"
-```
-
-Run once in interactive mode and enter the question at the prompt:
-
-```bash
-uv run researchflow run
-```
-
-Use all primary options:
-
-```bash
-uv run researchflow run "tool calling" \
-  --documents-dir examples/documents \
-  --output-dir output \
-  --max-steps 10 \
-  --verbose
-```
-
-Inspect the installed CLI:
-
-```bash
-uv run researchflow --help
-uv run researchflow run --help
-uv run researchflow --version
-```
-
-Options:
-
-- `--documents-dir`: root directory searched and read by document tools
-- `--output-dir`: root directory for reports and traces
-- `--max-steps`: positive upper bound on Agent actions; default `10`
-- `--agent-mode`: `rule` (default) or optional configured `llm`
-- `--verbose/--no-verbose`: show or hide run ID, tool order, status, duration,
-  and structured failure details; verbose output is disabled by default
-
-Exit codes:
-
-- `0`: the Agent completed and saved its report
-- `1`: the Agent, report save, or another runtime operation failed
-- `2`: a command argument, question, or directory configuration was invalid
-
-## Example Run
-
-The exact summary depends on the local documents. A successful run has this
-shape; generated identifiers and paths are represented by placeholders:
-
-```text
-研究计划
-1. [COMPLETED] Search local documents
-2. [COMPLETED] Read relevant documents
-3. [COMPLETED] Extract and summarize relevant content
-4. [COMPLETED] Save the research report
-
-工具状态
-[OK] search_documents
-[OK] read_document
-[OK] save_note
-
-最终摘要
-# 研究报告
-...
-
-输出文件
-报告: <output-directory>/notes/<run_id>.md
-Trace: <output-directory>/traces/<run_id>.jsonl
-```
-
-## Offline Tools
-
-| Tool | Purpose | Main input | Output |
-| --- | --- | --- | --- |
-| `search_documents` | Search local `.md` and `.txt` documents | `query`, `limit` | Query, count, and deterministically ordered hits with paths, titles, scores, and snippets |
-| `read_document` | Read one allowed UTF-8 document | `path` | Relative path, title, content, and character count |
-| `save_note` | Save a UTF-8 Markdown or text research note | `path`, `content`, `overwrite` | Relative saved path and character count |
-
-Pydantic validates every tool input and rejects unknown fields. Document access is
-limited to the configured document root, while notes are limited to the output
-root. The filesystem backends reject parent traversal, absolute-path escape, and
-symbolic-link escape. Existing notes are not silently overwritten when
-`overwrite=False`, which is the default.
-
-## Execution Traces
-
-Every completed tool call produces one independently parseable JSON object. The
-default trace location is:
-
-```text
-output/traces/<run_id>.jsonl
-```
-
-Example JSONL record:
-
-```json
-{"trace_id":"<trace_id>","run_id":"<run_id>","call_id":"<call_id>","tool_name":"search_documents","arguments":{"query":"tool calling","limit":5},"status":"succeeded","started_at":"2026-01-01T00:00:00Z","duration_ms":1.25,"error_type":null,"error_message":null}
-```
-
-Trace arguments are JSON-safe. For `save_note`, the full note body is not written
-to the trace; it is replaced by redaction metadata containing its character count.
-Trace files contain execution metadata, not Python tracebacks.
-
-## Testing and Quality Checks
-
-Run the test and formatting checks:
-
-```bash
-uv run pytest
-uv run ruff check .
-uv run ruff format --check .
-```
-
-Run the complete local acceptance sequence:
-
-```bash
-uv sync --frozen
+```powershell
 uv lock --check
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
+npm --prefix frontend test -- --run
+npm --prefix frontend run build
 uv run researchflow --help
-uv run researchflow run --help
-uv run researchflow --version
+uv run researchflow serve --help
 ```
 
-The repository does not currently claim configured coverage reporting, static type
-checking, or CI execution.
+## 当前限制
 
-## Project Structure
+- 执行是单进程同步的；SSE 用于本地观察与重放，不是分布式任务队列。
+- Web 页面须为可公开访问的 HTML；私网/本机地址、非 HTML、超大页面和重定向目前会
+  被安全拒绝。
+- LLM、网页搜索和页面可访问性是外部依赖。失败时系统会记录原因，不会伪造已验证结论。
+- 抽取式离线回退不会翻译外文来源；若 LLM 不可用或未满足语言/引用约束，报告会说明
+  回退状态。
 
-```text
-src/researchflow/       Package code for the Agent, tools, and execution layer
-tests/                  Unit and offline integration tests
-examples/documents/     Small UTF-8 example documents
-output/                 Generated reports and traces; ignored by Git
-pyproject.toml          Package and tool configuration
-uv.lock                 Locked dependencies
-```
-
-## Current Limitations
-
-- Rule mode has a fixed plan; LLM mode remains bounded to the same local tools.
-- Retrieval remains local and same-language; no web search is available.
-- LLM summaries cite only successfully read sources.
-- Inputs are local UTF-8 Markdown or text documents only.
-- Execution is synchronous and single-process.
-- There is no reranker, database, MCP, or network search.
-- There is no conversational memory or multi-turn interaction.
-
-## Roadmap
-
-Possible future work includes:
-
-- Database-backed document sources
-- Web or academic search tools
-- MCP server and client integration
-- Reusable Agent Skills
-- Evaluation and observability improvements
-
-These items are planned directions, not capabilities of the current version.
-
-## Independent Implementation
-
-> ResearchFlow Agent is an independently implemented educational and portfolio
-> project. The source code and example documents in this repository were created
-> for this project and do not contain proprietary or restricted project materials.
-
-Third-party dependencies remain subject to their respective licenses.
-
-## Quick Start
-
-ResearchFlow Agent defaults to a rule-driven, completely offline workflow. The
-optional LLM mode needs explicit environment configuration and never adds network
-search or changes the local tool boundary.
-
-Install the locked dependencies, inspect the CLI, and run a first local research
-task:
-
-```bash
-uv sync
-uv run researchflow --help
-uv run researchflow run "tool calling"
-```
-
-By default, the CLI searches `examples/documents` and writes generated files below
-`output`. Run without a question to enter it once interactively:
-
-```bash
-uv run researchflow run
-```
-
-The complete command supports custom directories, a step limit, and concise
-execution details:
-
-```bash
-uv run researchflow run "tool calling" \
-  --documents-dir examples/documents \
-  --output-dir output \
-  --max-steps 10 \
-  --verbose
-```
-
-Each successful run saves its report to `output/notes/<run_id>.md` and its
-line-delimited execution records to `output/traces/<run_id>.jsonl`. The CLI prints
-the actual paths produced by the run.
-
-## Development
-
-ResearchFlow Agent targets Python 3.11 and uses
-[uv](https://docs.astral.sh/uv/) for dependency management.
-
-```bash
-uv sync
-uv run researchflow --help
-uv run pytest
-uv run ruff check .
-uv run ruff format --check .
-```
-
-### Offline tools
-
-The offline tools use separate document and output roots and can be registered in
-the shared tool registry:
-
-```python
-from pathlib import Path
-
-from researchflow.domain import ToolCall
-from researchflow.tools import ToolContext, ToolRegistry
-from researchflow.tools.offline import create_offline_tools
-
-notes = Path("notes")
-notes.mkdir(exist_ok=True)
-context = ToolContext(
-    working_directory=Path("examples/documents"),
-    output_directory=notes,
-    run_id="example-run",
-)
-registry = ToolRegistry()
-for tool in create_offline_tools(context):
-    registry.register(tool)
-
-result = registry.get("search_documents").execute(
-    ToolCall(
-        call_id="search-1",
-        tool_name="search_documents",
-        arguments={"query": "工具调用", "limit": 5},
-    ),
-    context,
-)
-print(result.output)
-```
-
-### Traced tool execution
-
-`ToolExecutor` is the single synchronous entry point for registered tool calls. It
-returns the existing `ToolResult` and records success, validation failures, missing
-tools, and execution failures through a trace recorder.
-
-```python
-from researchflow.execution import JsonlTraceRecorder, ToolExecutor
-
-executor = ToolExecutor(registry, JsonlTraceRecorder())
-result = executor.execute(
-    ToolCall(
-        call_id="search-2",
-        tool_name="search_documents",
-        arguments={"query": "Agent 安全", "limit": 3},
-    ),
-    context,
-)
-```
-
-The JSONL recorder appends one independently parseable JSON object per line to
-`<output_directory>/traces/<run_id>.jsonl`. For example:
-
-```json
-{"trace_id":"...","run_id":"example-run","call_id":"search-2","tool_name":"search_documents","arguments":{"query":"Agent 安全","limit":3},"status":"succeeded","started_at":"2026-09-20T10:00:00Z","duration_ms":1.25,"error_type":null,"error_message":null}
-```
-
-Trace files are the durable execution record. The returned `AgentState` also
-contains the exact traces produced during that run. Large note bodies are redacted
-from trace arguments and represented by their character count.
-
-### Agent modes
-
-The default `rule` mode is synchronous and offline. It creates a fixed research
-plan, selects the local search/read/save tools, extracts relevant source text,
-saves a Markdown report, and records every real tool call. Optional `llm` mode
-uses validated structured outputs for the same plan/selection/summary loop and
-falls back to rule behavior when the provider is unavailable or invalid.
-
-```bash
-uv run researchflow run "tool calling" \
-  --documents-dir examples/documents \
-  --output-dir output \
-  --max-steps 10
-```
-
-Each run writes its report and execution traces below the selected output root:
-
-```text
-output/notes/<run_id>.md
-output/traces/<run_id>.jsonl
-```
-
-## License
-
-ResearchFlow Agent is available under the [MIT License](LICENSE).
+许可证见 [MIT License](LICENSE)。

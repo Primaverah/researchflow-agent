@@ -10,6 +10,7 @@ from researchflow.agent.graph import (
 )
 from researchflow.agent.llm_components import LLMPlanner, LLMSelector, LLMSummarizer
 from researchflow.agent.planner import RulePlanner
+from researchflow.agent.research_graph import LangGraphResearchRunner
 from researchflow.agent.runner import AgentRunner
 from researchflow.agent.selector import StateSelector
 from researchflow.agent.session import (
@@ -17,6 +18,8 @@ from researchflow.agent.session import (
     SessionCatalog,
     SessionGraphState,
     SessionResearchRequest,
+    SessionResearchResult,
+    SessionSource,
 )
 from researchflow.agent.summarizer import ExtractiveSummarizer
 from researchflow.agent.web import WebRulePlanner, WebStateSelector
@@ -33,12 +36,15 @@ __all__ = [
     "LLMPlanner",
     "LLMSelector",
     "LLMSummarizer",
+    "LangGraphResearchRunner",
     "LangGraphSessionRunner",
     "RulePlanner",
     "StateSelector",
     "SessionCatalog",
     "SessionGraphState",
     "SessionResearchRequest",
+    "SessionResearchResult",
+    "SessionSource",
     "WebRulePlanner",
     "WebStateSelector",
 ]

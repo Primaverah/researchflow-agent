@@ -25,7 +25,9 @@ LLM 或联网；Web 与 LLM 都是显式启用、运行时配置的能力。
 ## 2. 两条运行路径
 
 普通单次研究从 `researchflow run` 进入 `_run_workflow()`：创建工具上下文、注册
-本地工具，按选项加入 Tavily 与网页读取工具，再运行循环编排器或固定研究图。
+本地工具，按选项加入 Tavily 与网页读取工具，再运行默认的
+`LangGraphResearchRunner`。`--orchestrator graph` 与 `--orchestrator loop` 只保留作
+兼容和诊断路径，不是默认执行后端。
 
 会话研究从 `researchflow chat` 进入 `LangGraphSessionRunner`。每个 CLI 调用重新
 创建 Runner 也可以，因为状态不在 Runner 内存中，而在
@@ -49,10 +51,11 @@ current_input
 
 ## 3. 检索、读取与证据
 
-固定研究图的节点为：`initialize -> plan -> retrieve -> assess_evidence ->
-read_sources -> synthesize -> verify -> save -> finish`。在没有候选或没有可用证据
-时，图可有限次重新规划；读取失败时会在步骤预算内继续尝试未读候选，而不是反复
-读取同一批链接。
+默认研究图的节点为：`initialize -> plan -> retrieve -> read_sources ->
+assess_evidence -> synthesize -> verify -> save -> finish`。无有效正文时，读取节点会
+在候选预算内继续尝试未读候选；评估节点可有限次重新规划。每个节点完成后以同一
+`run_id` checkpoint，并投射不含正文/凭据的应用事件，供 CLI/API/控制台使用。原有 JSONL
+保持逐工具调用的兼容格式；图节点生命周期保存在应用事件流而不是插入工具 JSONL。
 
 1. 规划器根据 `standalone_query` 生成本地搜索与（启用后）Web 搜索操作。
 2. 检索结果被稳定去重，最多保留 10 个候选。
@@ -64,6 +67,17 @@ read_sources -> synthesize -> verify -> save -> finish`。在没有候选或没�
    例如编译器问题需要 GCC、Clang、MSVC 或同类编译器证据，年龄问题需要出生信息，
    “某人是谁”需要主体加身份、职业、出生、国籍或代表作等传记证据。
 6. 只有成功读取且通过相关性检查的 `ReadDocumentOutput` / `WebSource` 进入总结器。
+
+### 时效性完整名单门槛
+
+“今年/最新”与“获奖者/名单/完整列表”同时出现时，图会采用
+`current_complete_list` 策略：默认需要两个不同 URL 的合格正文。一条来源只有在同时满足
+HTTPS、域名精确匹配项目配置的 `web.official_domains`、且标题/正文明确包含本年度与完整
+名单信号时，才可作为单来源例外。默认官方域名列表为空；代码不会按人物、奖项或网站名
+硬编码例外。
+
+评估事件只保存策略名、已采用来源数、所需来源数及（如适用）官方来源 ID。未满足门槛时
+状态为 `insufficient_evidence`，不调用 grounded 总结器，也不会显示 `llm_grounded`。
 
 搜索摘要是“候选信息”，不能标为已读正文。若所有正文读取失败，报告会明确说明
 没有可验证的事实性答案，并分别列出未读搜索候选、搜索失败原因、正文读取失败原因。
@@ -147,12 +161,12 @@ CLI 启动时统一读取 `.env.local`；外层单/双引号会被移除，避�
 
 ```text
 notes/<run_id>.md          # UTF-8 Markdown 报告
-traces/<run_id>.jsonl      # 每行一个工具/决策/图事件
-sessions/checkpoints.sqlite3  # chat 状态
+traces/<run_id>.jsonl      # 每行一个工具调用/决策记录
+sessions/checkpoints.sqlite3  # 会话、研究图和应用运行状态
 ```
 
-JSONL 记录工具状态、耗时、图节点、候选/拒绝原因和 LLM 决策元数据；大报告正文会被
-redact，凭据和 HTTP 正文不进入 trace。Windows 控制台输出在目标编码无法表示字符时使用
+JSONL 记录工具状态、耗时与 LLM 决策元数据；应用事件保存候选/拒绝原因、图节点与证据
+状态。大报告正文会被 redact，凭据和 HTTP 正文不进入 trace。Windows 控制台输出在目标编码无法表示字符时使用
 替代字符，文件仍保持 UTF-8，避免 `UnicodeEncodeError` 使命令失败。
 
 ## 8. 当前限制与演进方向
