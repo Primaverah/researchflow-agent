@@ -754,6 +754,7 @@ class GraphAgentRunner:
     ) -> None:
         record = getattr(self._executor, "record_graph", None)
         if callable(record):
+            understanding = state.understanding
             record(
                 {
                     "node": node.value,
@@ -769,6 +770,32 @@ class GraphAgentRunner:
                     "generation_mode": state.generation_mode,
                     "generation_fallback_reason": state.generation_fallback_reason,
                     "generation_error_type": state.generation_error_type,
+                    "current_input": (
+                        understanding.current_input
+                        if understanding is not None
+                        else state.query
+                    ),
+                    "resolved_subject": (
+                        understanding.resolved_subject
+                        if understanding is not None
+                        else ""
+                    ),
+                    "standalone_query": (
+                        understanding.standalone_query
+                        if understanding is not None
+                        else state.query
+                    ),
+                    "intent": understanding.intent if understanding is not None else "",
+                    "required_facets": (
+                        understanding.required_facets
+                        if understanding is not None
+                        else []
+                    ),
+                    "generated_search_queries": (
+                        understanding.search_queries
+                        if understanding is not None
+                        else [state.query]
+                    ),
                 },
                 context,
             )

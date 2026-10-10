@@ -525,6 +525,35 @@ def test_body_admission_requires_all_resolved_subjects() -> None:
     assert reason == "missing_subject_coverage"
 
 
+def test_graph_trace_records_safe_query_understanding(tmp_path: Path) -> None:
+    executor = FakeExecutor(
+        lambda call: make_result(
+            call,
+            output={"hits": []}
+            if call.tool_name == "search_documents"
+            else {"path": "notes/graph.md", "char_count": 1},
+        )
+    )
+    understanding = build_deterministic_understanding(
+        "它们的发展历史",
+        prior_subject="C和C++",
+        prior_query="C和C++有什么区别",
+        prior_answer_target="C和C++有什么区别",
+        answer_language="zh",
+    )
+
+    GraphAgentRunner(
+        RulePlanner(), StateSelector(), ExtractiveSummarizer(), executor
+    ).run("C和C++的发展历史", make_context(tmp_path), understanding=understanding)
+
+    assert any(
+        event.get("standalone_query") == "C和C++的发展历史"
+        and event.get("resolved_subject") == "C和C++"
+        and event.get("required_facets") == ["C", "C++", "history"]
+        for event in executor.events
+    )
+
+
 def test_person_profile_requires_biographical_evidence_not_a_name_mention() -> None:
     unrelated = GraphAgentRunner._evidence_rejection_reason(
         "村上春树是谁",
