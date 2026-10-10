@@ -125,7 +125,13 @@ describe("App", () => {
   it("lists sessions and starts a turn from the composer", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify(["saved-session"])))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            { session_id: "saved-session", display_name: "已有研究" },
+          ]),
+        ),
+      )
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -143,7 +149,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
-    expect(await screen.findByText("saved-session")).toBeInTheDocument();
+    expect(await screen.findByText("已有研究")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("研究问题"), {
       target: { value: "tool calling" },
     });
@@ -160,7 +166,13 @@ describe("App", () => {
   it("starts a new local session before sending its first turn", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify(["saved-session"])))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            { session_id: "saved-session", display_name: "已有研究" },
+          ]),
+        ),
+      )
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -179,7 +191,7 @@ describe("App", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "new-session" });
 
     render(<App />);
-    await screen.findByText("saved-session");
+    await screen.findByText("已有研究");
     fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
 
     expect(screen.getByText("当前会话：new-session")).toBeInTheDocument();
@@ -198,7 +210,9 @@ describe("App", () => {
   it("loads the newest persisted run when a saved session is selected", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify(["demo"])))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ session_id: "demo", display_name: "演示" }])),
+      )
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -227,7 +241,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "demo" }));
+    fireEvent.click((await screen.findAllByTitle("demo"))[1]);
 
     expect(
       await screen.findByRole("button", { name: "第二轮问题" }),
@@ -239,7 +253,9 @@ describe("App", () => {
   it("switches a history item without posting another turn", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify(["demo"])))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ session_id: "demo", display_name: "演示" }])),
+      )
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -268,7 +284,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "demo" }));
+    fireEvent.click((await screen.findAllByTitle("demo"))[1]);
     await screen.findByText("第二轮回答");
     fireEvent.click(screen.getByRole("button", { name: "第一轮问题" }));
 
@@ -277,5 +293,31 @@ describe("App", () => {
       expect.stringContaining("/turns"),
       expect.anything(),
     );
+  });
+
+  it("renames and deletes the active session", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ session_id: "demo", display_name: "旧名称" }])),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ session_id: "demo", display_name: "新名称" }),
+        ),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", () => true);
+    vi.stubGlobal("crypto", { randomUUID: () => "fresh-session" });
+
+    render(<App />);
+    await screen.findByText("旧名称");
+    fireEvent.click(screen.getByRole("button", { name: "重命名会话" }));
+    fireEvent.change(screen.getByLabelText("会话名称"), { target: { value: "新名称" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存会话名称" }));
+    expect(await screen.findByText("新名称")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "删除会话" }));
+    expect(await screen.findByText("当前会话：fresh-session")).toBeInTheDocument();
   });
 });
