@@ -206,6 +206,7 @@ class LangGraphResearchRunner:
                 update={"end_reason": GraphEndReason.MAX_STEPS}
             )
             next_node = GraphNode.FINISH
+        self._legacy._record_graph(node, next_node, completed, self._context_or_raise())
         self._legacy._publish_node_events(
             self._event_sink, node, previous, completed, next_node
         )
