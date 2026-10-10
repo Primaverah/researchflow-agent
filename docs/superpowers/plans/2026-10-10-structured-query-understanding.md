@@ -55,17 +55,24 @@
 ~~~python
 def test_c_cpp_history_keeps_subjects_and_facet() -> None:
     result = build_deterministic_understanding(
-        "它们的发展历史", prior_subject="C和C++", prior_query="C和C++有什么区别",
-        prior_answer_target="C和C++有什么区别", answer_language="zh",
+        "它们的发展历史",
+        prior_subject="C和C++",
+        prior_query="C和C++有什么区别",
+        prior_answer_target="C和C++有什么区别",
+        answer_language="zh",
     )
     assert result.standalone_query == "C和C++的发展历史"
     assert result.required_facets == ["C", "C++", "history"]
     assert result.search_queries == ["C和C++的发展历史"]
 
+
 def test_current_nobel_list_has_year_and_facets() -> None:
     result = build_deterministic_understanding(
-        "今年的诺贝尔奖获得者有哪些", prior_subject="", prior_query="",
-        prior_answer_target="", answer_language="zh",
+        "今年的诺贝尔奖获得者有哪些",
+        prior_subject="",
+        prior_query="",
+        prior_answer_target="",
+        answer_language="zh",
     )
     assert str(result.freshness.target_year) in result.search_queries[0]
     assert {"nobel_prize", "winners", "target_year"} <= set(result.required_facets)
@@ -114,6 +121,7 @@ def test_rewriter_accepts_subject_preserving_output() -> None:
     result = rewriter.rewrite(fallback, recent_user_inputs=["C和C++有什么区别"])
     assert result.decision_source == "llm"
     assert "C" in result.standalone_query and "C++" in result.standalone_query
+
 
 def test_rewriter_rejects_json_that_drops_subject() -> None:
     result = rewriter.rewrite(fallback, recent_user_inputs=["C和C++有什么区别"])
@@ -164,13 +172,16 @@ git commit -m "feat: add safe llm query rewriter"
 ~~~python
 def test_ambiguous_follow_up_rewrites_once_and_researches_standalone_query(tmp_path):
     runner = LangGraphSessionRunner(
-        tmp_path / "checkpoints.sqlite3", research=lambda query: query,
-        research_with_context=requests.append, rewrite_understanding=spy_rewriter,
+        tmp_path / "checkpoints.sqlite3",
+        research=lambda query: query,
+        research_with_context=requests.append,
+        rewrite_understanding=spy_rewriter,
     )
     runner.chat("C和C++有什么区别", session_id="languages")
     runner.chat("它们的发展历史", session_id="languages")
     assert spy_rewriter.calls == 1
     assert requests[-1].understanding.standalone_query == "C和C++的发展历史"
+
 
 def test_recreated_runner_does_not_repeat_completed_rewriter(tmp_path):
     # Open the same SQLite database after the rewritten turn has checkpointed.
@@ -219,10 +230,12 @@ def test_c_cpp_history_rejects_marx_and_gis_before_read(tmp_path):
     assert "marx" not in fetched_urls and "gis" not in fetched_urls
     assert "missing_subject_coverage" in rejected_reasons
 
+
 def test_current_nobel_list_rejects_microsoft_and_accepts_official_list(tmp_path):
     state = runner.run("今年的诺贝尔奖获得者有哪些", context, understanding=nobel_2026)
     assert state.evidence_status is EvidenceStatus.SUFFICIENT
     assert state.official_complete_source_id == "https://www.nobelprize.org/prizes/"
+
 
 def test_two_sources_without_winners_facet_are_insufficient(tmp_path):
     assert state.evidence_status is EvidenceStatus.INSUFFICIENT
@@ -279,6 +292,7 @@ def test_trace_contains_safe_understanding_not_body(tmp_path):
     assert record["standalone_query"] == "C和C++的发展历史"
     assert "web page body" not in json.dumps(record, ensure_ascii=False)
 
+
 def test_llm_check_includes_query_rewriter(runner):
     assert "LLMQueryRewriter" in runner.stdout
 ~~~
@@ -297,7 +311,7 @@ Record only spec-approved fields in JSONL and existing service/SSE projection; d
 - [ ] **Step 4: Complete offline verification**
 
 ~~~powershell
-uv sync --frozen
+uv sync --frozen --extra llm --extra ui
 uv lock --check
 uv run pytest
 uv run ruff check .

@@ -520,11 +520,30 @@ def evaluate(
 
 @app.command("llm-check")
 def llm_check(ctx: typer.Context) -> None:
-    """Validate planner, selector, and summarizer structured LLM output."""
+    """Validate rewriter, planner, selector, and summarizer structured LLM output."""
     try:
         config = LLMConfig.resolve(cli=ctx.obj["llm_overrides"])
         provider = _create_llm_provider(config)
         model_name = getattr(provider, "model_name", "configured-llm")
+        rewriter = LLMQueryRewriter(
+            provider,
+            model_name=model_name,
+            max_output_tokens=config.rewriter_max_tokens,
+            response_format=config.response_format,
+            thinking=config.thinking,
+        )
+        rewriter.rewrite(
+            QueryUnderstanding(
+                current_input="它们的发展历史",
+                resolved_subject="C和C++",
+                standalone_query="C和C++的发展历史",
+                intent="history",
+                required_facets=["C", "C++", "history"],
+                search_queries=["C和C++的发展历史"],
+                decision_source="deterministic",
+            ),
+            recent_user_inputs=["C和C++有什么区别"],
+        )
         planner = LLMPlanner(
             provider,
             RulePlanner(),
@@ -568,7 +587,7 @@ def llm_check(ctx: typer.Context) -> None:
                 )
             ],
         )
-        components = (planner, selector, summarizer)
+        components = (rewriter, planner, selector, summarizer)
     except LLMError as exc:
         _input_error(str(exc))
     accepted = True

@@ -580,6 +580,11 @@ def test_graph_trace_records_safe_query_understanding(tmp_path: Path) -> None:
         prior_query="C和C++有什么区别",
         prior_answer_target="C和C++有什么区别",
         answer_language="zh",
+    ).model_copy(
+        update={
+            "decision_source": "deterministic_fallback",
+            "fallback_reason": "structured_output_invalid",
+        }
     )
 
     GraphAgentRunner(
@@ -590,6 +595,8 @@ def test_graph_trace_records_safe_query_understanding(tmp_path: Path) -> None:
         event.get("standalone_query") == "C和C++的发展历史"
         and event.get("resolved_subject") == "C和C++"
         and event.get("required_facets") == ["C", "C++", "history"]
+        and event.get("query_rewrite_decision_source") == "deterministic_fallback"
+        and event.get("query_rewrite_fallback_reason") == "structured_output_invalid"
         for event in executor.events
     )
 

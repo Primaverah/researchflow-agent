@@ -842,6 +842,16 @@ class GraphAgentRunner:
                         if understanding is not None
                         else [state.query]
                     ),
+                    "query_rewrite_decision_source": (
+                        understanding.decision_source
+                        if understanding is not None
+                        else ""
+                    ),
+                    "query_rewrite_fallback_reason": (
+                        understanding.fallback_reason
+                        if understanding is not None
+                        else ""
+                    ),
                 },
                 context,
             )

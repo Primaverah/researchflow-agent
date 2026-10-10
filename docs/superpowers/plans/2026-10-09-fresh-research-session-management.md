@@ -75,8 +75,11 @@ def test_default_budget_allows_one_replan_to_reach_finish() -> None:
     assert result.end_reason.value == "completed"
     assert result.node_steps <= result.max_steps == 13
 
+
 def test_lower_budget_is_persisted_as_non_completed_terminal_state() -> None:
-    snapshot = service_with_max_steps(1).start_turn(session_id="budget", question="问题")
+    snapshot = service_with_max_steps(1).start_turn(
+        session_id="budget", question="问题"
+    )
     assert snapshot.status.value == "failed"
     assert snapshot.end_reason == "max_steps"
     assert snapshot.node_steps == 1
@@ -125,18 +128,32 @@ git commit -m "fix: report graph budget exhaustion honestly"
 
 ```python
 def test_current_list_query_is_year_qualified_and_requires_two_sources() -> None:
-    intent = classify_freshness_intent("今年的诺贝尔奖目前出炉了哪些", today=date(2026, 10, 9))
-    assert build_retrieval_query("今年的诺贝尔奖目前出炉了哪些", intent).endswith("2026")
+    intent = classify_freshness_intent(
+        "今年的诺贝尔奖目前出炉了哪些", today=date(2026, 10, 9)
+    )
+    assert build_retrieval_query("今年的诺贝尔奖目前出炉了哪些", intent).endswith(
+        "2026"
+    )
     assert intent.requires_list_evidence is True
     assert policy.required_source_count(intent) == 2
+
 
 def test_current_list_ranks_2026_before_2022_and_rejects_stale_body() -> None:
     ranked = rank_candidates_for_query([source_2022, source_2026], QUERY, intent_2026)
     assert [item.url for item in ranked] == [source_2026.url, source_2022.url]
-    assert evidence_rejection_reason(source_2022, QUERY, intent_2026) == "stale_for_current_query"
+    assert (
+        evidence_rejection_reason(source_2022, QUERY, intent_2026)
+        == "stale_for_current_query"
+    )
+
 
 def test_explicit_year_is_not_replaced_by_execution_year() -> None:
-    assert classify_freshness_intent("2025年诺贝尔奖名单", today=date(2026, 10, 9)).target_year == 2025
+    assert (
+        classify_freshness_intent(
+            "2025年诺贝尔奖名单", today=date(2026, 10, 9)
+        ).target_year
+        == 2025
+    )
 ```
 
 - [ ] **Step 2: Run the focused tests to verify they fail**
@@ -188,9 +205,11 @@ def test_first_turn_creates_display_name_from_first_question() -> None:
     service.start_turn(session_id="alpha", question="村上春树是谁")
     assert store.list_sessions()[0].display_name == "村上春树是谁"
 
+
 def test_rename_changes_metadata_only() -> None:
     assert service.rename_session("alpha", "作者资料").display_name == "作者资料"
     assert checkpoint_thread_ids(connection) == {"alpha"}
+
 
 def test_delete_removes_only_target_application_and_checkpoint_rows() -> None:
     service.delete_session("alpha")
@@ -238,10 +257,13 @@ git commit -m "feat: persist and delete named sessions safely"
 
 ```python
 def test_session_api_lists_and_renames_records(client: TestClient) -> None:
-    assert client.get("/api/sessions").json() == [{"session_id": "alpha", "display_name": "第一问"}]
+    assert client.get("/api/sessions").json() == [
+        {"session_id": "alpha", "display_name": "第一问"}
+    ]
     response = client.patch("/api/sessions/alpha", json={"display_name": "资料研究"})
     assert response.status_code == 200
     assert response.json()["display_name"] == "资料研究"
+
 
 def test_delete_session_returns_204_then_404(client: TestClient) -> None:
     assert client.delete("/api/sessions/alpha").status_code == 204
@@ -344,8 +366,12 @@ git commit -m "feat: manage named research sessions in web ui"
 - [ ] **Step 1: Add or extend the end-to-end regression test**
 
 ```python
-def test_current_list_with_only_stale_read_source_is_insufficient_not_completed() -> None:
-    snapshot = run_fixture_search(query="今年的诺贝尔奖目前出炉了哪些", sources=[source_2022])
+def test_current_list_with_only_stale_read_source_is_insufficient_not_completed() -> (
+    None
+):
+    snapshot = run_fixture_search(
+        query="今年的诺贝尔奖目前出炉了哪些", sources=[source_2022]
+    )
     assert snapshot.status.value != "completed"
     assert "stale_for_current_query" in snapshot.evidence_gaps
 ```
