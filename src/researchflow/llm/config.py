@@ -21,6 +21,7 @@ class LLMConfig(BaseModel):
     planner_max_tokens: int = Field(default=1024, ge=1)
     selector_max_tokens: int = Field(default=1024, ge=1)
     summarizer_max_tokens: int = Field(default=2048, ge=1)
+    rewriter_max_tokens: int = Field(default=400, ge=1)
 
     @classmethod
     def resolve(cls, *, cli: Mapping[str, object] | None = None) -> "LLMConfig":
@@ -50,6 +51,7 @@ class LLMConfig(BaseModel):
             "planner_max_tokens": setting("planner_max_tokens", 1024),
             "selector_max_tokens": setting("selector_max_tokens", 1024),
             "summarizer_max_tokens": setting("summarizer_max_tokens", 2048),
+            "rewriter_max_tokens": setting("rewriter_max_tokens", 400),
         }
         if not values["api_key"] or not values["model"]:
             raise LLMConfigurationError(

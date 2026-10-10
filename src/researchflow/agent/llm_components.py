@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -9,6 +10,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from researchflow.agent.models import AgentAction, AgentActionType
 from researchflow.agent.planner import RulePlanner
+from researchflow.agent.query_understanding import QueryUnderstanding, subject_terms
 from researchflow.agent.selector import StateSelector
 from researchflow.agent.summarizer import ExtractiveSummarizer, SummaryGenerationStatus
 from researchflow.domain import AgentState, PlanStep, ResearchPlan
@@ -89,6 +91,16 @@ class LLMSummaryOutput(BaseModel):
     source_paths: list[str] = Field(default_factory=list)
 
 
+class LLMQueryUnderstandingOutput(BaseModel):
+    """The only query-rewriter fields that a model may control."""
+
+    resolved_subject: str
+    standalone_query: str = Field(min_length=1)
+    intent: str = Field(min_length=1)
+    required_facets: list[str] = Field(default_factory=list)
+    search_queries: list[str] = Field(min_length=1, max_length=3)
+
+
 class _LLMComponent:
     def __init__(
         self,
@@ -141,7 +153,9 @@ class _LLMComponent:
             "configuration_error"
             if isinstance(error, LLMConfigurationError)
             else "structured_output_invalid"
-            if isinstance(error, LLMStructuredOutputError)
+            if isinstance(
+                error, (LLMStructuredOutputError, ValidationError, ValueError)
+            )
             else "provider_error"
         )
         self.last_decision = LLMDecision(
@@ -156,6 +170,108 @@ class _LLMComponent:
             finish_reason=getattr(error, "finish_reason", "fallback"),
             diagnostic=getattr(error, "diagnostic", None),
         )
+
+
+class LLMQueryRewriter(_LLMComponent):
+    """Refine ambiguous turn context without granting retrieval authority."""
+
+    def __init__(
+        self,
+        provider: BaseLLMProvider,
+        *,
+        model_name: str,
+        max_output_tokens: int = 400,
+        response_format: str = "json_object",
+        thinking: bool = False,
+    ) -> None:
+        super().__init__(
+            provider, model_name, max_output_tokens, response_format, thinking
+        )
+
+    def rewrite(
+        self,
+        fallback: QueryUnderstanding,
+        *,
+        recent_user_inputs: list[str],
+    ) -> QueryUnderstanding:
+        try:
+            output = self._complete(
+                "Resolve the current user input into a retrieval query. Preserve every "
+                "resolved subject and required facet supplied by the deterministic "
+                "fallback. Do not answer the question, provide sources, URLs, tools, "
+                "or text outside the JSON object. Current date: "
+                f"{date.today().isoformat()}. Fallback: "
+                + json.dumps(fallback.model_dump(mode="json"), ensure_ascii=False)
+                + ". Recent user inputs: "
+                + json.dumps(recent_user_inputs[-6:], ensure_ascii=False),
+                LLMQueryUnderstandingOutput,
+                {
+                    "resolved_subject": fallback.resolved_subject,
+                    "standalone_query": fallback.standalone_query,
+                    "intent": fallback.intent,
+                    "required_facets": fallback.required_facets,
+                    "search_queries": fallback.search_queries,
+                },
+            )
+            assert isinstance(output, LLMQueryUnderstandingOutput)
+            self._validate_output(output, fallback)
+        except (LLMError, ValidationError, ValueError) as exc:
+            self._fallback("query_rewriter", exc)
+            return fallback.model_copy(
+                update={
+                    "decision_source": "deterministic_fallback",
+                    "fallback_reason": self.last_decision.fallback_reason,
+                }
+            )
+        assert self.last_decision is not None
+        self.last_decision = LLMDecision(
+            component="query_rewriter",
+            model=self.last_decision.model,
+            input_tokens=self.last_decision.input_tokens,
+            output_tokens=self.last_decision.output_tokens,
+            finish_reason=self.last_decision.finish_reason,
+        )
+        return QueryUnderstanding(
+            current_input=fallback.current_input,
+            resolved_subject=output.resolved_subject.strip(),
+            standalone_query=output.standalone_query.strip(),
+            intent=output.intent.strip(),
+            required_facets=_stable_unique(output.required_facets),
+            search_queries=_stable_unique(output.search_queries),
+            freshness=fallback.freshness,
+            decision_source="llm",
+        )
+
+    @staticmethod
+    def _validate_output(
+        output: LLMQueryUnderstandingOutput, fallback: QueryUnderstanding
+    ) -> None:
+        normalized = "\n".join(
+            [output.resolved_subject, output.standalone_query, *output.search_queries]
+        ).casefold()
+        if any(
+            term.casefold() not in normalized
+            for term in subject_terms(fallback.resolved_subject)
+        ):
+            raise ValueError("LLM query rewriter dropped a resolved subject")
+        if not set(fallback.required_facets).issubset(output.required_facets):
+            raise ValueError("LLM query rewriter dropped a required facet")
+        if (
+            fallback.freshness.target_year is not None
+            and str(fallback.freshness.target_year) not in normalized
+        ):
+            raise ValueError("LLM query rewriter dropped the required year")
+        if len(_stable_unique(output.search_queries)) != len(output.search_queries):
+            raise ValueError("LLM query rewriter returned duplicate search queries")
+
+
+def _stable_unique(values: list[str]) -> list[str]:
+    unique: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        if normalized and normalized not in unique:
+            unique.append(normalized)
+    return unique
 
 
 class LLMPlanner(_LLMComponent):

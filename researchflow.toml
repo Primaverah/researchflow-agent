@@ -5,6 +5,7 @@ timeout = 60
 planner_max_tokens = 1024
 selector_max_tokens = 1024
 summarizer_max_tokens = 2048
+rewriter_max_tokens = 400
 thinking = false
 retries = 1
 
