@@ -17,6 +17,7 @@ from researchflow.agent.query_understanding import (
     QueryUnderstanding,
     build_deterministic_understanding,
     is_language_only_request,
+    needs_llm_rewrite,
     requested_answer_language,
 )
 from researchflow.domain.models import DomainModel
@@ -257,6 +258,7 @@ class SessionResearchRequest(DomainModel):
     resolved_subject: str = ""
     intent: str = ""
     required_facets: list[str] = Field(default_factory=list)
+    understanding: QueryUnderstanding | None = None
 
 
 class SessionStateData(TypedDict, total=False):
@@ -291,11 +293,16 @@ class LangGraphSessionRunner:
             [SessionResearchRequest], str | SessionResearchResult | None
         ]
         | None = None,
+        rewrite_understanding: Callable[
+            [QueryUnderstanding, list[str]], QueryUnderstanding
+        ]
+        | None = None,
     ) -> None:
         self._database = database
         self._catalog = SessionCatalog(database)
         self._research = research
         self._research_with_context = research_with_context
+        self._rewrite_understanding = rewrite_understanding
         self._connection = sqlite3.connect(database, check_same_thread=False)
         self._checkpointer = SqliteSaver(
             self._connection, serde=JsonPlusSerializer(pickle_fallback=False)
@@ -332,13 +339,15 @@ class LangGraphSessionRunner:
         graph = StateGraph(SessionStateData)
         graph.add_node("load_context", self._load_context)
         graph.add_node("contextualize", self._contextualize)
+        graph.add_node("refine_understanding", self._refine_understanding)
         graph.add_node("clarify", self._clarify)
         graph.add_node("research", self._research_node)
         graph.add_node("respond", self._respond)
         graph.add_node("compact_history", self._compact_history)
         graph.add_edge(START, "load_context")
         graph.add_edge("load_context", "contextualize")
-        graph.add_edge("contextualize", "clarify")
+        graph.add_edge("contextualize", "refine_understanding")
+        graph.add_edge("refine_understanding", "clarify")
         graph.add_edge("clarify", "research")
         graph.add_edge("research", "respond")
         graph.add_edge("respond", "compact_history")
@@ -393,6 +402,30 @@ class LangGraphSessionRunner:
             "interrupt_status": (
                 "awaiting_clarification" if not understanding.standalone_query else ""
             ),
+        }
+
+    def _refine_understanding(self, state: dict[str, Any]) -> dict[str, Any]:
+        if self._rewrite_understanding is None:
+            return {}
+        raw_understanding = state.get("query_understanding")
+        if not isinstance(raw_understanding, dict):
+            return {}
+        deterministic = QueryUnderstanding.model_validate(raw_understanding)
+        if not needs_llm_rewrite(deterministic):
+            return {}
+        recent_user_inputs = [
+            item.get("content", "")
+            for item in state.get("messages", [])
+            if item.get("role") == "user" and isinstance(item.get("content"), str)
+        ]
+        refined = self._rewrite_understanding(deterministic, recent_user_inputs)
+        return {
+            "resolved_subject": refined.resolved_subject,
+            "intent": refined.intent,
+            "standalone_query": refined.standalone_query,
+            "rewritten_query": refined.standalone_query,
+            "required_facets": refined.required_facets,
+            "query_understanding": refined.model_dump(mode="json"),
         }
 
     @staticmethod
@@ -523,6 +556,11 @@ class LangGraphSessionRunner:
                     resolved_subject=state.get("resolved_subject", ""),
                     intent=state.get("intent", ""),
                     required_facets=state.get("required_facets", []),
+                    understanding=(
+                        QueryUnderstanding.model_validate(state["query_understanding"])
+                        if isinstance(state.get("query_understanding"), dict)
+                        else None
+                    ),
                 )
             )
         research_result = self._normalize_research_result(result)

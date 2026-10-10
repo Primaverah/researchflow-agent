@@ -191,3 +191,15 @@ def subject_terms(subject: str) -> list[str]:
         if part.strip()
     ]
     return terms or [subject]
+
+
+def needs_llm_rewrite(understanding: QueryUnderstanding) -> bool:
+    """Reserve an LLM round-trip for contextual or freshness-sensitive turns."""
+    if not understanding.standalone_query.strip():
+        return False
+    return (
+        has_reference(understanding.current_input)
+        or understanding.intent == "continuation"
+        or understanding.freshness.requires_current_evidence
+        or not understanding.resolved_subject
+    )

@@ -19,6 +19,7 @@ from researchflow.agent import (
     LangGraphResearchRunner,
     LangGraphSessionRunner,
     LLMPlanner,
+    LLMQueryRewriter,
     LLMSelector,
     LLMSummarizer,
     RulePlanner,
@@ -241,6 +242,28 @@ def _session_runner(
     allowed_domains: tuple[str, ...],
     llm_overrides: dict[str, object] | None,
 ) -> LangGraphSessionRunner:
+    rewriter = None
+    if agent_mode == "llm":
+        try:
+            llm_config = LLMConfig.resolve(cli=llm_overrides)
+            provider = _create_llm_provider(llm_config)
+        except LLMConfigurationError:
+            if not _allow_llm_fallback():
+                raise
+        except LLMDependencyError:
+            raise
+        else:
+            query_rewriter = LLMQueryRewriter(
+                provider,
+                model_name=getattr(provider, "model_name", "configured-llm"),
+                max_output_tokens=llm_config.rewriter_max_tokens,
+                response_format=llm_config.response_format,
+                thinking=llm_config.thinking,
+            )
+
+            def rewriter(understanding, inputs):
+                return query_rewriter.rewrite(understanding, recent_user_inputs=inputs)
+
     def research(request: SessionResearchRequest) -> SessionResearchResult:
         events: list[tuple[str, dict[str, object]]] = []
 
@@ -275,6 +298,7 @@ def _session_runner(
             )
         ),
         research_with_context=research,
+        rewrite_understanding=rewriter,
     )
 
 

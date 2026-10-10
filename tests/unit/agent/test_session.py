@@ -10,6 +10,15 @@ from researchflow.agent.session import (
 )
 
 
+class SpyRewriter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, understanding, recent_user_inputs):
+        self.calls += 1
+        return understanding
+
+
 def test_catalog_exact_delete_and_session_isolation(tmp_path: Path) -> None:
     catalog = SessionCatalog(tmp_path / "checkpoints.sqlite3")
     catalog.touch("one")
@@ -105,6 +114,26 @@ def test_session_persists_deterministic_query_understanding(tmp_path: Path) -> N
     assert understanding["current_input"] == "它们的发展历史"
     assert understanding["standalone_query"] == "C和C++的发展历史"
     assert understanding["required_facets"] == ["C", "C++", "history"]
+
+
+def test_ambiguous_follow_up_calls_rewriter_once_and_passes_understanding(
+    tmp_path: Path,
+) -> None:
+    requests: list[SessionResearchRequest] = []
+    rewriter = SpyRewriter()
+    runner = LangGraphSessionRunner(
+        tmp_path / "checkpoints.sqlite3",
+        research=lambda query: query,
+        research_with_context=lambda request: requests.append(request) or "answer",
+        rewrite_understanding=rewriter,
+    )
+
+    runner.chat("C和C++有什么区别", session_id="languages")
+    runner.chat("它们的发展历史", session_id="languages")
+
+    assert rewriter.calls == 1
+    assert requests[-1].understanding is not None
+    assert requests[-1].understanding.standalone_query == "C和C++的发展历史"
 
 
 def test_person_follow_ups_keep_subject_and_change_required_facets(
