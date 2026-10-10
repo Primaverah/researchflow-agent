@@ -14,6 +14,7 @@ from researchflow.agent import (
     WebRulePlanner,
 )
 from researchflow.agent.llm_components import LLMDecision
+from researchflow.agent.query_understanding import build_deterministic_understanding
 from researchflow.domain import (
     AgentStatus,
     ExecutionStatus,
@@ -343,6 +344,121 @@ def test_compiler_page_requires_compiler_evidence_not_only_subject() -> None:
         )
         is False
     )
+
+
+def test_c_cpp_history_rejects_candidates_without_both_subjects_before_read(
+    tmp_path: Path,
+) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return make_result(
+                call,
+                output={
+                    "results": [
+                        {
+                            "url": "https://example.test/marx",
+                            "title": "马克思主义发展历史",
+                        },
+                        {"url": "https://example.test/gis", "title": "GIS发展历史"},
+                        {
+                            "url": "https://example.test/cpp",
+                            "title": "C和C++的发展历史",
+                        },
+                    ]
+                },
+            )
+        if call.tool_name == "fetch_url":
+            return make_result(
+                call,
+                output={
+                    "url": call.arguments["url"],
+                    "title": "C和C++的发展历史",
+                    "summary": "",
+                    "accessed_at": "2026-10-10T00:00:00Z",
+                    "content": "C和C++的发展历史包括标准演进。",
+                },
+            )
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    executor = FakeExecutor(handler)
+    understanding = build_deterministic_understanding(
+        "它们的发展历史",
+        prior_subject="C和C++",
+        prior_query="C和C++有什么区别",
+        prior_answer_target="C和C++有什么区别",
+        answer_language="zh",
+    )
+    GraphAgentRunner(
+        WebRulePlanner(), StateSelector(), ExtractiveSummarizer(), executor
+    ).run("C和C++的发展历史", make_context(tmp_path), understanding=understanding)
+
+    fetched = [
+        call.arguments["url"]
+        for call in executor.calls
+        if call.tool_name == "fetch_url"
+    ]
+    assert fetched == ["https://example.test/cpp"]
+
+
+def test_current_nobel_list_rejects_non_nobel_candidate_before_read(
+    tmp_path: Path,
+) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return make_result(
+                call,
+                output={
+                    "results": [
+                        {
+                            "url": "https://example.test/microsoft",
+                            "title": "Microsoft 2026 products",
+                        },
+                        {
+                            "url": "https://example.test/nobel",
+                            "title": "2026 诺贝尔奖获奖者完整名单",
+                        },
+                    ]
+                },
+            )
+        if call.tool_name == "fetch_url":
+            return make_result(
+                call,
+                output={
+                    "url": call.arguments["url"],
+                    "title": "2026 诺贝尔奖获奖者完整名单",
+                    "summary": "",
+                    "accessed_at": "2026-10-10T00:00:00Z",
+                    "content": "2026 年诺贝尔奖获奖者完整名单。",
+                },
+            )
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    executor = FakeExecutor(handler)
+    understanding = build_deterministic_understanding(
+        "今年的诺贝尔奖获得者有哪些",
+        prior_subject="",
+        prior_query="",
+        prior_answer_target="",
+        answer_language="zh",
+    )
+    GraphAgentRunner(
+        WebRulePlanner(), StateSelector(), ExtractiveSummarizer(), executor
+    ).run(
+        "今年的诺贝尔奖获得者有哪些",
+        make_context(tmp_path),
+        understanding=understanding,
+    )
+
+    fetched = [
+        call.arguments["url"]
+        for call in executor.calls
+        if call.tool_name == "fetch_url"
+    ]
+    assert fetched == ["https://example.test/nobel"]
 
 
 def test_person_profile_requires_biographical_evidence_not_a_name_mention() -> None:

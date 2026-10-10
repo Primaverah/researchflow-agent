@@ -17,6 +17,7 @@ from researchflow.agent.graph import (
     GraphNode,
 )
 from researchflow.agent.planner import RulePlanner
+from researchflow.agent.query_understanding import QueryUnderstanding
 from researchflow.agent.selector import StateSelector
 from researchflow.agent.summarizer import ExtractiveSummarizer
 from researchflow.domain import AgentStatus, PlanStepStatus
@@ -73,6 +74,7 @@ class LangGraphResearchRunner:
         thread_id: str,
         answer_target: str | None = None,
         answer_language: str = "",
+        understanding: QueryUnderstanding | None = None,
         event_sink: GraphEventSink | None = None,
     ) -> AgentGraphState:
         self._context = context
@@ -93,6 +95,7 @@ class LangGraphResearchRunner:
                     query=query,
                     answer_target=answer_target or query,
                     answer_language=answer_language,
+                    understanding=understanding,
                     read_limit=self._legacy._read_limit,
                     max_replans=self._legacy._max_replans,
                     max_steps=self._max_steps,

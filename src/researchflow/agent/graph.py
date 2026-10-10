@@ -20,6 +20,7 @@ from researchflow.agent.evidence_policy import (
     evaluate_evidence_policy,
 )
 from researchflow.agent.planner import RulePlanner
+from researchflow.agent.query_understanding import QueryUnderstanding, subject_terms
 from researchflow.agent.selector import StateSelector
 from researchflow.agent.summarizer import ExtractiveSummarizer, SummaryGenerationStatus
 from researchflow.domain import (
@@ -101,6 +102,7 @@ class AgentGraphState(DomainModel):
     node_steps: int = 0
     max_steps: int = 10
     end_reason: GraphEndReason | None = None
+    understanding: QueryUnderstanding | None = None
 
 
 class AgentOrchestrator(Protocol):
@@ -153,6 +155,7 @@ class GraphAgentRunner:
         *,
         answer_target: str | None = None,
         answer_language: str = "",
+        understanding: QueryUnderstanding | None = None,
         event_sink: GraphEventSink | None = None,
     ) -> AgentState:
         state = AgentGraphState(
@@ -160,6 +163,7 @@ class GraphAgentRunner:
             query=query,
             answer_target=answer_target or query,
             answer_language=answer_language,
+            understanding=understanding,
             max_replans=self._max_replans,
             read_limit=self._read_limit,
             max_steps=self._max_steps,
@@ -286,7 +290,9 @@ class GraphAgentRunner:
                 candidates.extend(self._web_candidates(result.output))
         return {
             "agent": self._agent(state),
-            "candidates": self._deduplicate(candidates, state.query),
+            "candidates": self._deduplicate(
+                candidates, state.query, state.understanding
+            ),
         }
 
     def _assess_evidence(
@@ -629,22 +635,60 @@ class GraphAgentRunner:
         ]
 
     def _deduplicate(
-        self, candidates: list[GraphCandidate], query: str = ""
+        self,
+        candidates: list[GraphCandidate],
+        query: str = "",
+        understanding: QueryUnderstanding | None = None,
     ) -> list[GraphCandidate]:
         unique: dict[tuple[str, str], GraphCandidate] = {}
         for candidate in candidates:
             unique.setdefault((candidate.source_type, candidate.locator), candidate)
         ordered = list(unique.values())
+        if understanding is not None:
+            ordered = [
+                candidate
+                for candidate in ordered
+                if self._candidate_rejection_reason(candidate, understanding) is None
+            ]
         intent = classify_freshness_intent(query) if query else None
         if intent is not None and intent.target_year is not None:
             year = str(intent.target_year)
             ordered = sorted(
                 ordered,
-                key=lambda candidate: 0
-                if year in f"{candidate.title}\n{candidate.summary}"
-                else 1,
+                key=lambda candidate: (
+                    0 if year in f"{candidate.title}\n{candidate.summary}" else 1
+                ),
             )
         return ordered[: self._candidate_limit]
+
+    @staticmethod
+    def _candidate_rejection_reason(
+        candidate: GraphCandidate, understanding: QueryUnderstanding
+    ) -> str | None:
+        text = f"{candidate.title}\n{candidate.summary}".casefold()
+        required_subjects = subject_terms(understanding.resolved_subject)
+        if any(subject.casefold() not in text for subject in required_subjects):
+            return "missing_subject_coverage"
+        if understanding.freshness.target_year is not None and (
+            understanding.freshness.requires_current_evidence
+            and str(understanding.freshness.target_year) not in text
+        ):
+            return "stale_for_current_query"
+        facet_signals = {
+            "nobel_prize": ("诺贝尔", "nobel"),
+            "winners": ("获奖者", "获奖名单", "获奖", "winner", "laureate"),
+            "history": ("历史", "history"),
+            "common_compilers": ("编译器", "compiler", "gcc", "clang", "msvc"),
+            "representative_works": ("代表作", "作品", "电影", "film", "work"),
+            "birth_date": ("出生", "生于", "born"),
+            "age": ("年龄", "岁", "age", "years old"),
+            "latest_update": ("更新", "update", "version", "版本"),
+        }
+        for facet in understanding.required_facets:
+            signals = facet_signals.get(facet)
+            if signals is not None and not any(signal in text for signal in signals):
+                return f"missing_required_facet:{facet}"
+        return None
 
     @staticmethod
     def _has_web_plan(state: AgentGraphState) -> bool:

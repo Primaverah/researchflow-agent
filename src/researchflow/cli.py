@@ -22,6 +22,7 @@ from researchflow.agent import (
     LLMQueryRewriter,
     LLMSelector,
     LLMSummarizer,
+    QueryUnderstanding,
     RulePlanner,
     SessionCatalog,
     SessionResearchRequest,
@@ -282,6 +283,7 @@ def _session_runner(
             "langgraph",
             answer_target=request.answer_target,
             answer_language=request.answer_language,
+            understanding=request.understanding,
             event_sink=collect_event,
         )
         return SessionResearchResult.from_events(
@@ -315,6 +317,7 @@ def _run_workflow(
     *,
     answer_target: str | None = None,
     answer_language: str = "",
+    understanding: QueryUnderstanding | None = None,
     event_sink: Callable[[str, dict[str, object]], None] | None = None,
     thread_id: str | None = None,
 ) -> tuple[AgentState, ToolContext]:
@@ -385,6 +388,7 @@ def _run_workflow(
             thread_id=thread_id or context.run_id,
             answer_target=answer_target,
             answer_language=answer_language,
+            understanding=understanding,
             event_sink=event_sink,
         )
         if graph_state.agent is None:
@@ -411,6 +415,7 @@ def _run_workflow(
                 context,
                 answer_target=answer_target,
                 answer_language=answer_language,
+                understanding=understanding,
                 event_sink=event_sink,
             ),
             context,
