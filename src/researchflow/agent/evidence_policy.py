@@ -42,6 +42,7 @@ _CURRENT_TERMS = (
     "本年度",
     "当前",
     "最新",
+    "目前",
     "current",
     "currently",
     "latest",
