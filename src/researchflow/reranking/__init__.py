@@ -2,6 +2,7 @@
 
 from researchflow.reranking.candidate import CandidateRanker
 from researchflow.reranking.models import (
+    BodyRanking,
     CandidateRanking,
     RankedSource,
     RankingCandidate,
@@ -9,6 +10,7 @@ from researchflow.reranking.models import (
 
 __all__ = [
     "CandidateRanker",
+    "BodyRanking",
     "CandidateRanking",
     "RankedSource",
     "RankingCandidate",

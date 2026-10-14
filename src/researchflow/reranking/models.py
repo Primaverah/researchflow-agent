@@ -35,3 +35,13 @@ class CandidateRanking:
 
     source_ids: list[str]
     records: list[RankedSource]
+
+
+@dataclass(frozen=True, slots=True)
+class BodyRanking:
+    """Ordered read sources and any explicit relevance-threshold rejections."""
+
+    source_ids: list[str]
+    accepted_source_ids: list[str]
+    rejected_reasons: Mapping[str, str]
+    records: list[RankedSource]
