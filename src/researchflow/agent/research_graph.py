@@ -45,6 +45,8 @@ class LangGraphResearchRunner:
         max_concurrency: int = 3,
         max_replans: int = 1,
         official_domains: tuple[str, ...] = (),
+        candidate_ranker=None,
+        body_reranker=None,
     ) -> None:
         self._legacy = GraphAgentRunner(
             planner,
@@ -57,6 +59,8 @@ class LangGraphResearchRunner:
             max_concurrency=max_concurrency,
             max_replans=max_replans,
             official_domains=official_domains,
+            candidate_ranker=candidate_ranker,
+            body_reranker=body_reranker,
         )
         self._max_steps = max_steps
         self._context: ToolContext | None = None

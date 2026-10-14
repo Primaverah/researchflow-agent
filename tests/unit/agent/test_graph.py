@@ -22,7 +22,25 @@ from researchflow.domain import (
     ToolCall,
     ToolResult,
 )
+from researchflow.reranking.models import CandidateRanking, RankedSource
 from researchflow.tools import ToolContext
+
+
+class ReverseCandidateRanker:
+    def rank(self, query, candidates):
+        ordered = list(reversed(candidates))
+        return CandidateRanking(
+            source_ids=[candidate.source_id for candidate in ordered],
+            records=[
+                RankedSource(
+                    source_id=candidate.source_id,
+                    position=index,
+                    scores={"rrf": 1.0 / index},
+                    reason="test_ranker",
+                )
+                for index, candidate in enumerate(ordered, start=1)
+            ],
+        )
 
 
 class FakeExecutor:
@@ -79,6 +97,53 @@ def make_context(tmp_path: Path) -> ToolContext:
     return ToolContext(
         working_directory=tmp_path, output_directory=tmp_path, run_id="graph"
     )
+
+
+def test_graph_reads_hybrid_top_web_candidate_before_provider_first_result(
+    tmp_path: Path,
+) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return make_result(
+                call,
+                output={
+                    "results": [
+                        {"url": "https://example.test/first", "title": "First"},
+                        {"url": "https://example.test/better", "title": "Better"},
+                    ]
+                },
+            )
+        if call.tool_name == "fetch_url":
+            return make_result(
+                call,
+                output={
+                    "url": call.arguments["url"],
+                    "title": call.arguments["title"],
+                    "summary": "",
+                    "accessed_at": "2026-10-14T00:00:00Z",
+                    "content": "C++ compiler evidence: GCC and Clang.",
+                },
+            )
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    executor = FakeExecutor(handler)
+    GraphAgentRunner(
+        WebRulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        executor,
+        candidate_ranker=ReverseCandidateRanker(),
+        max_concurrency=1,
+    ).run("C++ compiler", make_context(tmp_path))
+
+    fetched = [
+        call.arguments["url"]
+        for call in executor.calls
+        if call.tool_name == "fetch_url"
+    ]
+    assert fetched[0] == "https://example.test/better"
 
 
 def test_graph_state_is_serializable_and_routes_are_side_effect_free() -> None:

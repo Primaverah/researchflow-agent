@@ -44,6 +44,10 @@ from researchflow.llm import (
     OpenAICompatibleProvider,
     require_openai_dependency,
 )
+from researchflow.reranking.factory import (
+    build_rerankers,
+    resolve_reranking_config,
+)
 from researchflow.tools import ToolContext, ToolRegistry
 from researchflow.tools.offline import ReadDocumentOutput, create_offline_tools
 from researchflow.tools.web import (
@@ -328,6 +332,8 @@ def _run_workflow(
     planner = RulePlanner()
     selector = StateSelector()
     summarizer = ExtractiveSummarizer(allowed_domains=allowed_domains)
+    llm_provider = None
+    llm_model_name = "configured-llm"
     if enable_web:
         provider = TavilySearchProvider.from_environment()
         for tool in create_web_tools(provider, allowed_domains=allowed_domains):
@@ -346,6 +352,8 @@ def _run_workflow(
             raise
         else:
             model_name = getattr(provider, "model_name", "configured-llm")
+            llm_provider = provider
+            llm_model_name = model_name
             planner = LLMPlanner(
                 provider,
                 planner,
@@ -371,6 +379,11 @@ def _run_workflow(
                 thinking=llm_config.thinking,
                 allowed_domains=allowed_domains,
             )
+    reranker_bundle = build_rerankers(
+        resolve_reranking_config(load_project_config()),
+        llm_provider=llm_provider,
+        llm_model_name=llm_model_name,
+    )
     executor = ToolExecutor(registry, JsonlTraceRecorder())
     runner: AgentOrchestrator
     if orchestrator == "langgraph":
@@ -381,6 +394,8 @@ def _run_workflow(
             summarizer,
             executor,
             max_steps=max_steps,
+            candidate_ranker=reranker_bundle.candidate_ranker,
+            body_reranker=reranker_bundle.body_reranker,
             **_graph_options(),
         ).run(
             query,
@@ -401,6 +416,8 @@ def _run_workflow(
             summarizer,
             executor,
             max_steps=max_steps,
+            candidate_ranker=reranker_bundle.candidate_ranker,
+            body_reranker=reranker_bundle.body_reranker,
             **_graph_options(),
         )
     else:

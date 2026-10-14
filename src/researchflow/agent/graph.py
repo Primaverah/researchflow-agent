@@ -33,6 +33,9 @@ from researchflow.domain import (
 )
 from researchflow.domain.models import DomainModel
 from researchflow.execution import ToolExecutor
+from researchflow.reranking.body import BodyReranker
+from researchflow.reranking.candidate import CandidateRanker
+from researchflow.reranking.models import RankingCandidate
 from researchflow.tools import ToolContext
 from researchflow.tools.offline import ReadDocumentOutput
 from researchflow.tools.web import WebSource
@@ -131,6 +134,8 @@ class GraphAgentRunner:
         max_concurrency: int = 3,
         max_replans: int = 1,
         official_domains: tuple[str, ...] = (),
+        candidate_ranker: CandidateRanker | None = None,
+        body_reranker: BodyReranker | None = None,
     ) -> None:
         if min(max_steps, candidate_limit, read_limit, max_concurrency) < 1:
             raise ValueError("graph limits must be positive")
@@ -146,6 +151,8 @@ class GraphAgentRunner:
         self._max_concurrency = max_concurrency
         self._max_replans = max_replans
         self._official_domains = official_domains
+        self._candidate_ranker = candidate_ranker
+        self._body_reranker = body_reranker
         self._call_count = 0
 
     def run(
@@ -292,11 +299,10 @@ class GraphAgentRunner:
             )
             is not None
         ]
+        deduplicated = self._deduplicate(candidates, state.query, state.understanding)
         return {
             "agent": self._agent(state),
-            "candidates": self._deduplicate(
-                candidates, state.query, state.understanding
-            ),
+            "candidates": self._rank_web_candidates(state.query, deduplicated),
             "rejected_sources": [*state.rejected_sources, *pre_read_rejections],
         }
 
@@ -426,6 +432,18 @@ class GraphAgentRunner:
                     web_sources.append(source)
                 else:
                     rejected.append(f"{source.url} — {rejection}")
+        if self._body_reranker is not None and web_sources:
+            ranking = self._body_reranker.rank(state.query, web_sources)
+            by_url = {source.url: source for source in web_sources}
+            web_sources = [
+                by_url[source_id]
+                for source_id in ranking.accepted_source_ids
+                if source_id in by_url
+            ]
+            rejected.extend(
+                f"{source_id} — {reason}"
+                for source_id, reason in ranking.rejected_reasons.items()
+            )
         return {
             "agent": self._agent(state),
             "documents": documents,
@@ -727,6 +745,37 @@ class GraphAgentRunner:
                 ),
             )
         return ordered[: self._candidate_limit]
+
+    def _rank_web_candidates(
+        self, query: str, candidates: list[GraphCandidate]
+    ) -> list[GraphCandidate]:
+        if self._candidate_ranker is None:
+            return candidates
+        web = [candidate for candidate in candidates if candidate.source_type == "web"]
+        if not web:
+            return candidates
+        ranking = self._candidate_ranker.rank(
+            query,
+            [
+                RankingCandidate(
+                    source_id=candidate.locator,
+                    title=candidate.title,
+                    summary=candidate.summary,
+                    input_position=index,
+                )
+                for index, candidate in enumerate(web)
+            ],
+        )
+        by_locator = {candidate.locator: candidate for candidate in web}
+        ranked_web = [
+            by_locator[source_id]
+            for source_id in ranking.source_ids
+            if source_id in by_locator
+        ]
+        local = [
+            candidate for candidate in candidates if candidate.source_type != "web"
+        ]
+        return [*local, *ranked_web][: self._candidate_limit]
 
     @staticmethod
     def _candidate_rejection_reason(
