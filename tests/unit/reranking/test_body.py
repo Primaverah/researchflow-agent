@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
-from researchflow.reranking.body import BodyReranker
+from researchflow.llm import BaseLLMProvider, LLMResponse, TokenUsage
+from researchflow.reranking.body import BodyReranker, LLMBodyReranker
 from researchflow.tools.web.models import WebSource
 
 
@@ -16,6 +17,19 @@ class FixedCrossEncoder:
     def score(self, pairs: list[tuple[str, str]]) -> list[float]:
         self.pairs = pairs
         return [0.9, 0.2]
+
+
+class FakeProvider(BaseLLMProvider):
+    def __init__(self, response: str) -> None:
+        self._response = response
+        self.requests = []
+
+    def complete(self, request):
+        self.requests.append(request)
+        return LLMResponse(
+            content=self._response,
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
 
 
 def _sources() -> list[WebSource]:
@@ -64,3 +78,38 @@ def test_body_relevance_threshold_rejects_low_scoring_sources() -> None:
     assert ranking.rejected_reasons == {
         "https://example.test/unrelated": "body_relevance_below_threshold"
     }
+
+
+def test_llm_reranker_rejects_unread_source_id_and_keeps_cross_encoder_order() -> None:
+    provider = FakeProvider(
+        '{"decisions":[{"source_id":"https://attacker.test/not-read",'
+        '"score":1.0,"reason":"irrelevant"}]}'
+    )
+    ranking = BodyReranker(
+        embedding=FixedEmbedding(),
+        cross_encoder=FixedCrossEncoder(),
+        llm_reranker=LLMBodyReranker(provider, model_name="fake"),
+        llm_top_n=2,
+        llm_margin=1.0,
+    ).rank("C++ compiler", _sources())
+
+    assert ranking.source_ids == [
+        "https://example.test/compiler",
+        "https://example.test/unrelated",
+    ]
+    assert ranking.records[0].fallback_reason == "llm_invalid_source_id"
+    assert len(provider.requests) == 1
+
+
+def test_llm_reranker_is_skipped_when_top_scores_have_a_large_margin() -> None:
+    provider = FakeProvider('{"decisions":[]}')
+    ranking = BodyReranker(
+        embedding=FixedEmbedding(),
+        cross_encoder=FixedCrossEncoder(),
+        llm_reranker=LLMBodyReranker(provider, model_name="fake"),
+        llm_top_n=2,
+        llm_margin=0.1,
+    ).rank("C++ compiler", _sources())
+
+    assert ranking.records[0].fallback_reason is None
+    assert provider.requests == []
