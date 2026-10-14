@@ -131,6 +131,9 @@ class SessionSource(DomainModel):
     kind: str
     read: bool
     reason: str | None = None
+    ranking_scores: dict[str, float] = Field(default_factory=dict)
+    ranking_reason: str | None = None
+    ranking_fallback_reason: str | None = None
 
 
 class SessionResearchResult(DomainModel):
@@ -223,6 +226,7 @@ class SessionResearchResult(DomainModel):
         title = data.get("title")
         kind = data.get("kind")
         reason = data.get("reason")
+        ranking_scores = data.get("ranking_scores")
         sources.append(
             SessionSource(
                 source_id=source_id,
@@ -233,6 +237,26 @@ class SessionResearchResult(DomainModel):
                 kind=kind if isinstance(kind, str) else "web",
                 read=read,
                 reason=reason if isinstance(reason, str) else None,
+                ranking_scores=(
+                    dict(ranking_scores)
+                    if isinstance(ranking_scores, Mapping)
+                    and all(
+                        isinstance(key, str) and isinstance(value, (int, float))
+                        for key, value in ranking_scores.items()
+                    )
+                    else {}
+                ),
+                ranking_reason=(
+                    data["ranking_reason"]
+                    if isinstance(data.get("ranking_reason"), str)
+                    and data["ranking_reason"]
+                    else None
+                ),
+                ranking_fallback_reason=(
+                    data["ranking_fallback_reason"]
+                    if isinstance(data.get("ranking_fallback_reason"), str)
+                    else None
+                ),
             )
         )
 

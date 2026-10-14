@@ -34,6 +34,12 @@ function SourceList({ sources }: { sources: SourceSnapshot[] }) {
               source.title
             )}
             {source.reason ? <small>原因：{source.reason}</small> : null}
+            {source.ranking_reason ? (
+              <small>排序：{source.ranking_reason}</small>
+            ) : null}
+            {source.ranking_fallback_reason ? (
+              <small>排序回退：{source.ranking_fallback_reason}</small>
+            ) : null}
           </span>
         </li>
       ))}

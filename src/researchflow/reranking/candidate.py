@@ -147,7 +147,9 @@ class CandidateRanker:
         )
         if not denominator:
             raise ValueError("embedding vectors must not be zero")
-        return sum(a * b for a, b in zip(left, right, strict=True)) / denominator
+        # SentenceTransformer may yield numpy scalar elements. Convert at the
+        # ranking boundary so trace/event JSON remains portable.
+        return float(sum(a * b for a, b in zip(left, right, strict=True)) / denominator)
 
     def _rrf(
         self,

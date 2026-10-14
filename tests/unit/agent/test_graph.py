@@ -146,6 +146,51 @@ def test_graph_reads_hybrid_top_web_candidate_before_provider_first_result(
     assert fetched[0] == "https://example.test/better"
 
 
+def test_ranking_events_expose_scores_without_source_body(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return make_result(
+                call,
+                output={
+                    "results": [{"url": "https://example.test/a", "title": "Compiler"}]
+                },
+            )
+        if call.tool_name == "fetch_url":
+            return make_result(
+                call,
+                output={
+                    "url": call.arguments["url"],
+                    "title": "Compiler",
+                    "summary": "",
+                    "accessed_at": "2026-10-14T00:00:00Z",
+                    "content": "GCC is a compiler.",
+                },
+            )
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    runner = GraphAgentRunner(
+        WebRulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        FakeExecutor(handler),
+        candidate_ranker=ReverseCandidateRanker(),
+    )
+
+    runner.run(
+        "C++ compiler",
+        make_context(tmp_path),
+        event_sink=lambda event_type, data: events.append((event_type, data)),
+    )
+
+    ranking_event = next(data for kind, data in events if kind == "candidate_reranked")
+    assert ranking_event["rrf_score"] == 1.0
+    assert "content" not in ranking_event
+
+
 def test_graph_state_is_serializable_and_routes_are_side_effect_free() -> None:
     state = AgentGraphState(run_id="graph", query="question")
 

@@ -5,6 +5,9 @@ export type SourceSnapshot = {
   kind: string;
   read: boolean;
   reason: string | null;
+  ranking_scores?: Record<string, number>;
+  ranking_reason?: string | null;
+  ranking_fallback_reason?: string | null;
 };
 
 export type RunSnapshot = {

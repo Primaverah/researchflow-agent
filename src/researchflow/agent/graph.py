@@ -73,6 +73,9 @@ class GraphCandidate(DomainModel):
     locator: str
     title: str
     summary: str = ""
+    ranking_scores: dict[str, float] = Field(default_factory=dict)
+    ranking_reason: str = ""
+    ranking_fallback_reason: str | None = None
 
 
 class AgentGraphState(DomainModel):
@@ -106,6 +109,8 @@ class AgentGraphState(DomainModel):
     max_steps: int = 10
     end_reason: GraphEndReason | None = None
     understanding: QueryUnderstanding | None = None
+    candidate_ranking: list[dict[str, object]] = Field(default_factory=list)
+    body_ranking: list[dict[str, object]] = Field(default_factory=list)
 
 
 class AgentOrchestrator(Protocol):
@@ -300,9 +305,13 @@ class GraphAgentRunner:
             is not None
         ]
         deduplicated = self._deduplicate(candidates, state.query, state.understanding)
+        ranked_candidates, ranking_diagnostics = self._rank_web_candidates(
+            state.query, deduplicated
+        )
         return {
             "agent": self._agent(state),
-            "candidates": self._rank_web_candidates(state.query, deduplicated),
+            "candidates": ranked_candidates,
+            "candidate_ranking": ranking_diagnostics,
             "rejected_sources": [*state.rejected_sources, *pre_read_rejections],
         }
 
@@ -444,11 +453,24 @@ class GraphAgentRunner:
                 f"{source_id} — {reason}"
                 for source_id, reason in ranking.rejected_reasons.items()
             )
+            body_ranking = [
+                {
+                    "source_id": record.source_id,
+                    "rank_position": record.position,
+                    "scores": dict(record.scores),
+                    "ranking_reason": record.reason,
+                    "ranking_fallback_reason": record.fallback_reason,
+                }
+                for record in ranking.records
+            ]
+        else:
+            body_ranking = state.body_ranking
         return {
             "agent": self._agent(state),
             "documents": documents,
             "web_sources": web_sources,
             "rejected_sources": rejected,
+            "body_ranking": body_ranking,
             "attempted_candidates": [
                 *state.attempted_candidates,
                 *(candidate.locator for candidate in unread),
@@ -748,12 +770,12 @@ class GraphAgentRunner:
 
     def _rank_web_candidates(
         self, query: str, candidates: list[GraphCandidate]
-    ) -> list[GraphCandidate]:
+    ) -> tuple[list[GraphCandidate], list[dict[str, object]]]:
         if self._candidate_ranker is None:
-            return candidates
+            return candidates, []
         web = [candidate for candidate in candidates if candidate.source_type == "web"]
         if not web:
-            return candidates
+            return candidates, []
         ranking = self._candidate_ranker.rank(
             query,
             [
@@ -767,15 +789,32 @@ class GraphAgentRunner:
             ],
         )
         by_locator = {candidate.locator: candidate for candidate in web}
+        records = {record.source_id: record for record in ranking.records}
         ranked_web = [
-            by_locator[source_id]
+            by_locator[source_id].model_copy(
+                update={
+                    "ranking_scores": dict(records[source_id].scores),
+                    "ranking_reason": records[source_id].reason,
+                    "ranking_fallback_reason": records[source_id].fallback_reason,
+                }
+            )
             for source_id in ranking.source_ids
             if source_id in by_locator
         ]
         local = [
             candidate for candidate in candidates if candidate.source_type != "web"
         ]
-        return [*local, *ranked_web][: self._candidate_limit]
+        diagnostics = [
+            {
+                "source_id": record.source_id,
+                "rank_position": record.position,
+                "scores": dict(record.scores),
+                "ranking_reason": record.reason,
+                "ranking_fallback_reason": record.fallback_reason,
+            }
+            for record in ranking.records
+        ]
+        return [*local, *ranked_web][: self._candidate_limit], diagnostics
 
     @staticmethod
     def _candidate_rejection_reason(
@@ -901,6 +940,8 @@ class GraphAgentRunner:
                         if understanding is not None
                         else ""
                     ),
+                    "candidate_ranking": state.candidate_ranking,
+                    "body_ranking": state.body_ranking,
                 },
                 context,
             )
@@ -944,6 +985,26 @@ class GraphAgentRunner:
                         "source_id": candidate.locator,
                         "title": candidate.title,
                         "kind": candidate.source_type,
+                        "ranking_scores": candidate.ranking_scores,
+                        "ranking_reason": candidate.ranking_reason,
+                        "ranking_fallback_reason": candidate.ranking_fallback_reason,
+                    },
+                )
+            for record in state.candidate_ranking:
+                scores = record.get("scores")
+                self._emit(
+                    event_sink,
+                    "candidate_reranked",
+                    {
+                        "source_id": record.get("source_id"),
+                        "rank_position": record.get("rank_position"),
+                        "rrf_score": scores.get("rrf")
+                        if isinstance(scores, dict)
+                        else None,
+                        "ranking_reason": record.get("ranking_reason"),
+                        "ranking_fallback_reason": record.get(
+                            "ranking_fallback_reason"
+                        ),
                     },
                 )
             for rejected in state.rejected_sources[len(previous.rejected_sources) :]:
@@ -969,6 +1030,14 @@ class GraphAgentRunner:
                     },
                 )
             for source in state.web_sources[len(previous.web_sources) :]:
+                ranking = next(
+                    (
+                        item
+                        for item in state.body_ranking
+                        if item.get("source_id") == source.url
+                    ),
+                    {},
+                )
                 self._emit(
                     event_sink,
                     "source_read",
@@ -977,6 +1046,11 @@ class GraphAgentRunner:
                         "title": source.title,
                         "kind": "web",
                         "content_length": len(source.content),
+                        "ranking_scores": ranking.get("scores", {}),
+                        "ranking_reason": ranking.get("ranking_reason", ""),
+                        "ranking_fallback_reason": ranking.get(
+                            "ranking_fallback_reason"
+                        ),
                     },
                 )
             for rejected in state.rejected_sources[len(previous.rejected_sources) :]:

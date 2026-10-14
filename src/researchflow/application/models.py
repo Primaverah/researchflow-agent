@@ -47,6 +47,9 @@ class SourceSnapshot(DomainModel):
     kind: str
     read: bool
     reason: str | None = None
+    ranking_scores: dict[str, float] = Field(default_factory=dict)
+    ranking_reason: str | None = None
+    ranking_fallback_reason: str | None = None
 
 
 class EvidenceSnapshot(DomainModel):
@@ -63,6 +66,9 @@ class EvidenceSnapshot(DomainModel):
                 url=candidate.locator if candidate.source_type == "web" else "",
                 kind=candidate.source_type,
                 read=False,
+                ranking_scores=candidate.ranking_scores,
+                ranking_reason=candidate.ranking_reason or None,
+                ranking_fallback_reason=candidate.ranking_fallback_reason,
             )
             for candidate in state.candidates
         ]

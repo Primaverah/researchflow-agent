@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from researchflow.reranking.candidate import CandidateRanker
 from researchflow.reranking.models import RankingCandidate
 
@@ -71,3 +75,23 @@ def test_empty_candidates_produce_an_empty_ranking() -> None:
 
     assert ranking.source_ids == []
     assert ranking.records == []
+
+
+def test_embedding_scores_are_json_serializable_python_floats() -> None:
+    numpy = pytest.importorskip("numpy")
+
+    class NumpyEmbedding:
+        def embed(self, texts: list[str]):
+            assert len(texts) == 3
+            return [
+                [numpy.float32(1.0), numpy.float32(0.0)],
+                [numpy.float32(1.0), numpy.float32(0.0)],
+                [numpy.float32(0.0), numpy.float32(1.0)],
+            ]
+
+    ranking = CandidateRanker(embedding=NumpyEmbedding()).rank(
+        "C++ compiler", _candidates()
+    )
+
+    assert isinstance(ranking.records[0].scores["embedding"], float)
+    json.dumps(ranking.records[0].scores)

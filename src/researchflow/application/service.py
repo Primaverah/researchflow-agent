@@ -302,6 +302,26 @@ class ResearchService:
             kind=kind if isinstance(kind, str) else "web",
             read=read,
             reason=reason if isinstance(reason, str) else None,
+            ranking_scores=(
+                dict(data["ranking_scores"])
+                if isinstance(data.get("ranking_scores"), Mapping)
+                and all(
+                    isinstance(key, str) and isinstance(value, (int, float))
+                    for key, value in data["ranking_scores"].items()
+                )
+                else {}
+            ),
+            ranking_reason=(
+                data["ranking_reason"]
+                if isinstance(data.get("ranking_reason"), str)
+                and data["ranking_reason"]
+                else None
+            ),
+            ranking_fallback_reason=(
+                data["ranking_fallback_reason"]
+                if isinstance(data.get("ranking_fallback_reason"), str)
+                else None
+            ),
         )
 
     @staticmethod

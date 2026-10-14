@@ -176,11 +176,25 @@ JSONL 记录工具状态、耗时与 LLM 决策元数据；图 Trace 还记录�
 HTTP 正文不进入 trace。Windows 控制台输出在目标编码无法表示字符时使用替代字符，文件仍
 保持 UTF-8，避免 `UnicodeEncodeError` 使命令失败。
 
+### 网页候选与正文重排序
+
+启用 Web 时，搜索标题与摘要只用于候选排序：`CandidateRanker` 对最多 10 个安全候选
+计算临时 BM25 与可选 embedding 相似度，并用 RRF 融合；并列时保持输入顺序。模型或可选
+依赖不可用时回退为稳定 BM25 顺序。正文只有在 `fetch_url` 成功后才交给 `BodyReranker`：
+先做 embedding 排序，随后可选 Cross-Encoder 精排；LLM reranker 默认关闭，且仅在 Top-N
+分数接近时对已读正文、已知 source id 作 JSON 裁决。它们永远不能新增 URL 或把摘要变成
+证据。
+
+图事件和 evidence 面板可显示 rank、BM25/embedding/RRF/Cross-Encoder 等标量分数、排序
+理由与回退理由；不写入网页正文、prompt、原始模型输出或密钥。无论排序得分如何，主体、
+分面、年份、正文质量与 evidence policy 仍是不可绕过的硬门槛。
+
 ## 8. 当前限制与演进方向
 
 - 网页重定向当前安全拒绝，尚未实现逐跳校验和连接绑定。
-- 相关性规则现以主体、已知分面与年份作硬门槛；尚未形成统一、可学习的可解释分数模型，
-  因此边缘主题仍可能被过严拒绝或需要额外来源。
+- 网页候选已使用 BM25、可选 embedding/RRF 与可选正文重排序，但没有持久向量索引、真实
+  标注 benchmark、Cross-Encoder 默认启用策略或逐事实蕴含验证，因此边缘主题仍可能被过严
+  拒绝或需要额外来源。
 - `PARTIAL` 的按分面回答、逐条结论 source-id verifier 与完整会话诊断字段仍需继续完成。
 - 离线抽取器不会翻译英文原文；LLM 不可用或未遵守输出约束时，报告仍会标明来源而不能
   承诺把所有证据翻译成人类指定语言。
