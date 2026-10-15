@@ -13,6 +13,13 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import Field
 
+from researchflow.agent.query_understanding import (
+    QueryUnderstanding,
+    build_deterministic_understanding,
+    is_language_only_request,
+    needs_llm_rewrite,
+    requested_answer_language,
+)
 from researchflow.domain.models import DomainModel
 
 
@@ -43,6 +50,7 @@ class SessionGraphState(DomainModel):
     answer_target: str = ""
     answer_language: str = ""
     required_facets: list[str] = Field(default_factory=list)
+    query_understanding: QueryUnderstanding | None = None
     rewritten_query: str = ""
     prior_query: str = ""
     turn_count: int = 0
@@ -123,6 +131,9 @@ class SessionSource(DomainModel):
     kind: str
     read: bool
     reason: str | None = None
+    ranking_scores: dict[str, float] = Field(default_factory=dict)
+    ranking_reason: str | None = None
+    ranking_fallback_reason: str | None = None
 
 
 class SessionResearchResult(DomainModel):
@@ -215,6 +226,7 @@ class SessionResearchResult(DomainModel):
         title = data.get("title")
         kind = data.get("kind")
         reason = data.get("reason")
+        ranking_scores = data.get("ranking_scores")
         sources.append(
             SessionSource(
                 source_id=source_id,
@@ -225,6 +237,26 @@ class SessionResearchResult(DomainModel):
                 kind=kind if isinstance(kind, str) else "web",
                 read=read,
                 reason=reason if isinstance(reason, str) else None,
+                ranking_scores=(
+                    dict(ranking_scores)
+                    if isinstance(ranking_scores, Mapping)
+                    and all(
+                        isinstance(key, str) and isinstance(value, (int, float))
+                        for key, value in ranking_scores.items()
+                    )
+                    else {}
+                ),
+                ranking_reason=(
+                    data["ranking_reason"]
+                    if isinstance(data.get("ranking_reason"), str)
+                    and data["ranking_reason"]
+                    else None
+                ),
+                ranking_fallback_reason=(
+                    data["ranking_fallback_reason"]
+                    if isinstance(data.get("ranking_fallback_reason"), str)
+                    else None
+                ),
             )
         )
 
@@ -250,6 +282,7 @@ class SessionResearchRequest(DomainModel):
     resolved_subject: str = ""
     intent: str = ""
     required_facets: list[str] = Field(default_factory=list)
+    understanding: QueryUnderstanding | None = None
 
 
 class SessionStateData(TypedDict, total=False):
@@ -263,6 +296,7 @@ class SessionStateData(TypedDict, total=False):
     answer_target: str
     answer_language: str
     required_facets: list[str]
+    query_understanding: dict[str, Any]
     rewritten_query: str
     prior_query: str
     turn_count: int
@@ -283,11 +317,16 @@ class LangGraphSessionRunner:
             [SessionResearchRequest], str | SessionResearchResult | None
         ]
         | None = None,
+        rewrite_understanding: Callable[
+            [QueryUnderstanding, list[str]], QueryUnderstanding
+        ]
+        | None = None,
     ) -> None:
         self._database = database
         self._catalog = SessionCatalog(database)
         self._research = research
         self._research_with_context = research_with_context
+        self._rewrite_understanding = rewrite_understanding
         self._connection = sqlite3.connect(database, check_same_thread=False)
         self._checkpointer = SqliteSaver(
             self._connection, serde=JsonPlusSerializer(pickle_fallback=False)
@@ -324,13 +363,15 @@ class LangGraphSessionRunner:
         graph = StateGraph(SessionStateData)
         graph.add_node("load_context", self._load_context)
         graph.add_node("contextualize", self._contextualize)
+        graph.add_node("refine_understanding", self._refine_understanding)
         graph.add_node("clarify", self._clarify)
         graph.add_node("research", self._research_node)
         graph.add_node("respond", self._respond)
         graph.add_node("compact_history", self._compact_history)
         graph.add_edge(START, "load_context")
         graph.add_edge("load_context", "contextualize")
-        graph.add_edge("contextualize", "clarify")
+        graph.add_edge("contextualize", "refine_understanding")
+        graph.add_edge("refine_understanding", "clarify")
         graph.add_edge("clarify", "research")
         graph.add_edge("research", "respond")
         graph.add_edge("respond", "compact_history")
@@ -344,72 +385,71 @@ class LangGraphSessionRunner:
     @staticmethod
     def _contextualize(state: dict[str, Any]) -> dict[str, Any]:
         latest = state.get("current_input", "").strip()
-        subject = state.get("resolved_subject", "").strip()
-        intent = LangGraphSessionRunner._intent(latest)
-        requested_language = LangGraphSessionRunner._requested_answer_language(latest)
-        language_only = requested_language is not None and (
-            LangGraphSessionRunner._is_language_only_request(latest)
+        requested_language = requested_answer_language(latest)
+        language_only = requested_language is not None and is_language_only_request(
+            latest
         )
         prior_target = (
             state.get("answer_target", "").strip()
             or state.get("standalone_query", "").strip()
             or state.get("prior_query", "").strip()
         )
-        if not subject:
-            subject = LangGraphSessionRunner._explicit_subject(
-                state.get("prior_query", "").strip()
-            )
-        explicit_subject = (
-            ""
-            if language_only
-            or intent == "continuation"
-            or LangGraphSessionRunner._has_reference(latest)
-            else LangGraphSessionRunner._explicit_subject(latest)
-        )
-        if explicit_subject:
-            subject = explicit_subject
-
-        if language_only and prior_target:
-            standalone = prior_target
-        elif LangGraphSessionRunner._has_reference(latest) and subject:
-            standalone = LangGraphSessionRunner._replace_reference(latest, subject)
-        else:
-            standalone = latest
-
-        if intent == "compiler" and subject:
-            standalone = f"{subject}都使用哪些常见编译器"
-            facets = ["common_compilers"]
-        elif intent == "representative_works" and subject:
-            standalone = f"{subject}的代表电影作品有哪些"
-            facets = ["representative_works"]
-        elif intent == "age" and subject:
-            standalone = f"{subject}的出生日期及截至当前日期的年龄".strip()
-            facets = ["birth_date", "age"]
-        elif intent == "latest_update" and subject:
-            standalone = f"{subject}最近什么时候更新"
-            facets = ["latest_update"]
-        elif intent == "continuation" and subject:
-            standalone = f"{subject}更多信息"
-            facets = []
-        else:
-            facets = []
         answer_language = (
             requested_language
             or state.get("answer_language", "").strip()
             or LangGraphSessionRunner._language_of(latest)
         )
+        understanding = build_deterministic_understanding(
+            latest,
+            prior_subject=state.get("resolved_subject", ""),
+            prior_query=(
+                state.get("standalone_query", "").strip()
+                or state.get("prior_query", "").strip()
+            ),
+            prior_answer_target=prior_target,
+            answer_language=answer_language,
+        )
         return {
-            "resolved_subject": subject,
-            "intent": intent,
-            "standalone_query": standalone,
+            "resolved_subject": understanding.resolved_subject,
+            "intent": understanding.intent,
+            "standalone_query": understanding.standalone_query,
             "answer_target": (
-                prior_target if language_only and prior_target else standalone
+                prior_target
+                if language_only and prior_target
+                else understanding.standalone_query
             ),
             "answer_language": answer_language,
-            "rewritten_query": standalone,
-            "required_facets": facets,
+            "rewritten_query": understanding.standalone_query,
+            "required_facets": understanding.required_facets,
+            "query_understanding": understanding.model_dump(mode="json"),
             "turn_count": state.get("turn_count", 0) + 1,
-            "interrupt_status": "awaiting_clarification" if not standalone else "",
+            "interrupt_status": (
+                "awaiting_clarification" if not understanding.standalone_query else ""
+            ),
+        }
+
+    def _refine_understanding(self, state: dict[str, Any]) -> dict[str, Any]:
+        if self._rewrite_understanding is None:
+            return {}
+        raw_understanding = state.get("query_understanding")
+        if not isinstance(raw_understanding, dict):
+            return {}
+        deterministic = QueryUnderstanding.model_validate(raw_understanding)
+        if not needs_llm_rewrite(deterministic):
+            return {}
+        recent_user_inputs = [
+            item.get("content", "")
+            for item in state.get("messages", [])
+            if item.get("role") == "user" and isinstance(item.get("content"), str)
+        ]
+        refined = self._rewrite_understanding(deterministic, recent_user_inputs)
+        return {
+            "resolved_subject": refined.resolved_subject,
+            "intent": refined.intent,
+            "standalone_query": refined.standalone_query,
+            "rewritten_query": refined.standalone_query,
+            "required_facets": refined.required_facets,
+            "query_understanding": refined.model_dump(mode="json"),
         }
 
     @staticmethod
@@ -540,6 +580,11 @@ class LangGraphSessionRunner:
                     resolved_subject=state.get("resolved_subject", ""),
                     intent=state.get("intent", ""),
                     required_facets=state.get("required_facets", []),
+                    understanding=(
+                        QueryUnderstanding.model_validate(state["query_understanding"])
+                        if isinstance(state.get("query_understanding"), dict)
+                        else None
+                    ),
                 )
             )
         research_result = self._normalize_research_result(result)

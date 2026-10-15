@@ -3,8 +3,14 @@
 import json
 from datetime import UTC, datetime
 
-from researchflow.agent.llm_components import LLMPlanner, LLMSelector, LLMSummarizer
+from researchflow.agent.llm_components import (
+    LLMPlanner,
+    LLMQueryRewriter,
+    LLMSelector,
+    LLMSummarizer,
+)
 from researchflow.agent.planner import RulePlanner
+from researchflow.agent.query_understanding import build_deterministic_understanding
 from researchflow.agent.selector import StateSelector
 from researchflow.agent.summarizer import ExtractiveSummarizer
 from researchflow.agent.web import WebRulePlanner
@@ -33,6 +39,69 @@ class FakeProvider(BaseLLMProvider):
             usage=TokenUsage(input_tokens=3, output_tokens=2),
             finish_reason="stop",
         )
+
+
+def _c_cpp_history_understanding():
+    return build_deterministic_understanding(
+        "它们的发展历史",
+        prior_subject="C和C++",
+        prior_query="C和C++有什么区别",
+        prior_answer_target="C和C++有什么区别",
+        answer_language="zh",
+    )
+
+
+def test_llm_query_rewriter_accepts_subject_preserving_output() -> None:
+    rewriter = LLMQueryRewriter(
+        FakeProvider(
+            [
+                {
+                    "resolved_subject": "C和C++",
+                    "standalone_query": "C和C++的发展历史",
+                    "intent": "history",
+                    "required_facets": ["C", "C++", "history"],
+                    "search_queries": ["C和C++的发展历史"],
+                }
+            ]
+        ),
+        model_name="fake-model",
+        max_output_tokens=400,
+    )
+
+    result = rewriter.rewrite(
+        _c_cpp_history_understanding(), recent_user_inputs=["C和C++有什么区别"]
+    )
+
+    assert result.decision_source == "llm"
+    assert result.standalone_query == "C和C++的发展历史"
+    assert rewriter.last_decision is not None
+    assert rewriter.last_decision.component == "query_rewriter"
+
+
+def test_llm_query_rewriter_rejects_json_that_drops_subject() -> None:
+    rewriter = LLMQueryRewriter(
+        FakeProvider(
+            [
+                {
+                    "resolved_subject": "",
+                    "standalone_query": "发展历史",
+                    "intent": "history",
+                    "required_facets": ["history"],
+                    "search_queries": ["发展历史"],
+                }
+            ]
+        ),
+        model_name="fake-model",
+    )
+
+    result = rewriter.rewrite(
+        _c_cpp_history_understanding(), recent_user_inputs=["C和C++有什么区别"]
+    )
+
+    assert result.decision_source == "deterministic_fallback"
+    assert result.standalone_query == "C和C++的发展历史"
+    assert rewriter.last_decision is not None
+    assert rewriter.last_decision.fallback_reason == "structured_output_invalid"
 
 
 def test_llm_planner_returns_validated_local_plan() -> None:

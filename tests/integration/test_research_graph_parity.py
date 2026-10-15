@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from researchflow.agent import (
@@ -8,6 +9,7 @@ from researchflow.agent import (
     StateSelector,
 )
 from researchflow.agent.graph import AgentGraphState, GraphNode
+from researchflow.agent.query_understanding import build_deterministic_understanding
 from researchflow.agent.web import WebRulePlanner
 from researchflow.domain import AgentState, AgentStatus, PlanStepStatus, ToolResult
 from researchflow.execution import JsonlTraceRecorder, ToolExecutor
@@ -180,6 +182,61 @@ def test_langgraph_research_runner_reads_selected_sources(tmp_path: Path) -> Non
     ).run("可靠正文", context, thread_id="read-session")
 
     assert state.documents[0].path == "evidence.md"
+
+
+def test_langgraph_runner_records_safe_structured_query_trace(tmp_path: Path) -> None:
+    documents = tmp_path / "documents"
+    output = tmp_path / "output"
+    documents.mkdir()
+    output.mkdir()
+    (documents / "evidence.md").write_text(
+        "# Evidence\n\n可靠正文内容。", encoding="utf-8"
+    )
+    context = ToolContext(
+        working_directory=documents, output_directory=output, run_id="trace-run"
+    )
+    registry = ToolRegistry()
+    for tool in create_offline_tools(context):
+        registry.register(tool)
+    understanding = build_deterministic_understanding(
+        "它们的发展历史",
+        prior_subject="C和C++",
+        prior_query="C和C++有什么区别",
+        prior_answer_target="C和C++有什么区别",
+        answer_language="zh",
+    ).model_copy(
+        update={
+            "decision_source": "deterministic_fallback",
+            "fallback_reason": "structured_output_invalid",
+        }
+    )
+
+    LangGraphResearchRunner(
+        tmp_path / "checkpoints.sqlite3",
+        RulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        ToolExecutor(registry, JsonlTraceRecorder()),
+    ).run(
+        understanding.standalone_query,
+        context,
+        thread_id="trace-session",
+        understanding=understanding,
+    )
+
+    records = [
+        json.loads(line)
+        for line in (output / "traces" / "trace-run.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert any(
+        record.get("event_type") == "graph_node"
+        and record["standalone_query"] == "C和C++的发展历史"
+        and record["query_rewrite_decision_source"] == "deterministic_fallback"
+        and record["query_rewrite_fallback_reason"] == "structured_output_invalid"
+        for record in records
+    )
 
 
 def test_langgraph_research_runner_synthesizes_and_saves_once(tmp_path: Path) -> None:

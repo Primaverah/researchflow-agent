@@ -5,6 +5,7 @@ timeout = 60
 planner_max_tokens = 1024
 selector_max_tokens = 1024
 summarizer_max_tokens = 2048
+rewriter_max_tokens = 400
 thinking = false
 retries = 1
 
@@ -23,3 +24,14 @@ candidate_limit = 10
 read_limit = 5
 max_concurrency = 3
 max_replans = 1
+
+[reranking]
+embedding_enabled = true
+embedding_model = "paraphrase-multilingual-MiniLM-L12-v2"
+cross_encoder_enabled = false
+cross_encoder_model = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+cross_encoder_top_n = 5
+llm_enabled = false
+llm_top_n = 3
+llm_margin = 0.08
+body_relevance_threshold = 0.0

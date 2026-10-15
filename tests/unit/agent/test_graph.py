@@ -14,6 +14,7 @@ from researchflow.agent import (
     WebRulePlanner,
 )
 from researchflow.agent.llm_components import LLMDecision
+from researchflow.agent.query_understanding import build_deterministic_understanding
 from researchflow.domain import (
     AgentStatus,
     ExecutionStatus,
@@ -21,7 +22,25 @@ from researchflow.domain import (
     ToolCall,
     ToolResult,
 )
+from researchflow.reranking.models import CandidateRanking, RankedSource
 from researchflow.tools import ToolContext
+
+
+class ReverseCandidateRanker:
+    def rank(self, query, candidates):
+        ordered = list(reversed(candidates))
+        return CandidateRanking(
+            source_ids=[candidate.source_id for candidate in ordered],
+            records=[
+                RankedSource(
+                    source_id=candidate.source_id,
+                    position=index,
+                    scores={"rrf": 1.0 / index},
+                    reason="test_ranker",
+                )
+                for index, candidate in enumerate(ordered, start=1)
+            ],
+        )
 
 
 class FakeExecutor:
@@ -78,6 +97,98 @@ def make_context(tmp_path: Path) -> ToolContext:
     return ToolContext(
         working_directory=tmp_path, output_directory=tmp_path, run_id="graph"
     )
+
+
+def test_graph_reads_hybrid_top_web_candidate_before_provider_first_result(
+    tmp_path: Path,
+) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return make_result(
+                call,
+                output={
+                    "results": [
+                        {"url": "https://example.test/first", "title": "First"},
+                        {"url": "https://example.test/better", "title": "Better"},
+                    ]
+                },
+            )
+        if call.tool_name == "fetch_url":
+            return make_result(
+                call,
+                output={
+                    "url": call.arguments["url"],
+                    "title": call.arguments["title"],
+                    "summary": "",
+                    "accessed_at": "2026-10-14T00:00:00Z",
+                    "content": "C++ compiler evidence: GCC and Clang.",
+                },
+            )
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    executor = FakeExecutor(handler)
+    GraphAgentRunner(
+        WebRulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        executor,
+        candidate_ranker=ReverseCandidateRanker(),
+        max_concurrency=1,
+    ).run("C++ compiler", make_context(tmp_path))
+
+    fetched = [
+        call.arguments["url"]
+        for call in executor.calls
+        if call.tool_name == "fetch_url"
+    ]
+    assert fetched[0] == "https://example.test/better"
+
+
+def test_ranking_events_expose_scores_without_source_body(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return make_result(
+                call,
+                output={
+                    "results": [{"url": "https://example.test/a", "title": "Compiler"}]
+                },
+            )
+        if call.tool_name == "fetch_url":
+            return make_result(
+                call,
+                output={
+                    "url": call.arguments["url"],
+                    "title": "Compiler",
+                    "summary": "",
+                    "accessed_at": "2026-10-14T00:00:00Z",
+                    "content": "GCC is a compiler.",
+                },
+            )
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    runner = GraphAgentRunner(
+        WebRulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        FakeExecutor(handler),
+        candidate_ranker=ReverseCandidateRanker(),
+    )
+
+    runner.run(
+        "C++ compiler",
+        make_context(tmp_path),
+        event_sink=lambda event_type, data: events.append((event_type, data)),
+    )
+
+    ranking_event = next(data for kind, data in events if kind == "candidate_reranked")
+    assert ranking_event["rrf_score"] == 1.0
+    assert "content" not in ranking_event
 
 
 def test_graph_state_is_serializable_and_routes_are_side_effect_free() -> None:
@@ -343,6 +454,314 @@ def test_compiler_page_requires_compiler_evidence_not_only_subject() -> None:
         )
         is False
     )
+
+
+def test_c_cpp_history_rejects_candidates_without_both_subjects_before_read(
+    tmp_path: Path,
+) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return make_result(
+                call,
+                output={
+                    "results": [
+                        {
+                            "url": "https://example.test/marx",
+                            "title": "马克思主义发展历史",
+                        },
+                        {"url": "https://example.test/gis", "title": "GIS发展历史"},
+                        {
+                            "url": "https://example.test/cpp",
+                            "title": "C和C++的发展历史",
+                        },
+                    ]
+                },
+            )
+        if call.tool_name == "fetch_url":
+            return make_result(
+                call,
+                output={
+                    "url": call.arguments["url"],
+                    "title": "C和C++的发展历史",
+                    "summary": "",
+                    "accessed_at": "2026-10-10T00:00:00Z",
+                    "content": "C和C++的发展历史包括标准演进。",
+                },
+            )
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    executor = FakeExecutor(handler)
+    understanding = build_deterministic_understanding(
+        "它们的发展历史",
+        prior_subject="C和C++",
+        prior_query="C和C++有什么区别",
+        prior_answer_target="C和C++有什么区别",
+        answer_language="zh",
+    )
+    GraphAgentRunner(
+        WebRulePlanner(), StateSelector(), ExtractiveSummarizer(), executor
+    ).run("C和C++的发展历史", make_context(tmp_path), understanding=understanding)
+
+    fetched = [
+        call.arguments["url"]
+        for call in executor.calls
+        if call.tool_name == "fetch_url"
+    ]
+    assert fetched == ["https://example.test/cpp"]
+
+
+def test_current_nobel_list_rejects_non_nobel_candidate_before_read(
+    tmp_path: Path,
+) -> None:
+    def handler(call: ToolCall) -> ToolResult:
+        if call.tool_name == "search_documents":
+            return make_result(call, output={"hits": []})
+        if call.tool_name == "web_search":
+            return make_result(
+                call,
+                output={
+                    "results": [
+                        {
+                            "url": "https://example.test/microsoft",
+                            "title": "Microsoft 2026 products",
+                        },
+                        {
+                            "url": "https://example.test/nobel",
+                            "title": "2026 诺贝尔奖获奖者完整名单",
+                        },
+                    ]
+                },
+            )
+        if call.tool_name == "fetch_url":
+            return make_result(
+                call,
+                output={
+                    "url": call.arguments["url"],
+                    "title": "2026 诺贝尔奖获奖者完整名单",
+                    "summary": "",
+                    "accessed_at": "2026-10-10T00:00:00Z",
+                    "content": "2026 年诺贝尔奖获奖者完整名单。",
+                },
+            )
+        return make_result(call, output={"path": "notes/graph.md", "char_count": 1})
+
+    executor = FakeExecutor(handler)
+    understanding = build_deterministic_understanding(
+        "今年的诺贝尔奖获得者有哪些",
+        prior_subject="",
+        prior_query="",
+        prior_answer_target="",
+        answer_language="zh",
+    )
+    GraphAgentRunner(
+        WebRulePlanner(), StateSelector(), ExtractiveSummarizer(), executor
+    ).run(
+        "今年的诺贝尔奖获得者有哪些",
+        make_context(tmp_path),
+        understanding=understanding,
+    )
+
+    fetched = [
+        call.arguments["url"]
+        for call in executor.calls
+        if call.tool_name == "fetch_url"
+    ]
+    assert fetched == ["https://example.test/nobel"]
+
+
+def test_pre_read_rejection_is_exposed_with_its_reason(tmp_path: Path) -> None:
+    executor = FakeExecutor(
+        lambda call: make_result(
+            call,
+            output={"hits": []}
+            if call.tool_name == "search_documents"
+            else {
+                "results": [
+                    {"url": "https://example.test/microsoft", "title": "Microsoft 2026"}
+                ]
+            },
+        )
+    )
+    understanding = build_deterministic_understanding(
+        "今年的诺贝尔奖获得者有哪些",
+        prior_subject="",
+        prior_query="",
+        prior_answer_target="",
+        answer_language="zh",
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+
+    GraphAgentRunner(
+        WebRulePlanner(), StateSelector(), ExtractiveSummarizer(), executor
+    ).run(
+        understanding.standalone_query,
+        make_context(tmp_path),
+        understanding=understanding,
+        event_sink=lambda event_type, data: events.append((event_type, data)),
+    )
+
+    assert (
+        "source_rejected",
+        {
+            "source_id": "https://example.test/microsoft",
+            "reason": "missing_required_facet:nobel_prize",
+        },
+    ) in events
+
+
+def test_retrieve_uses_each_bounded_query_from_understanding(tmp_path: Path) -> None:
+    executor = FakeExecutor(
+        lambda call: make_result(
+            call,
+            output={"hits": []}
+            if call.tool_name == "search_documents"
+            else {"results": []},
+        )
+    )
+    runner = GraphAgentRunner(
+        WebRulePlanner(), StateSelector(), ExtractiveSummarizer(), executor
+    )
+    understanding = build_deterministic_understanding(
+        "它们的发展历史",
+        prior_subject="C和C++",
+        prior_query="C和C++有什么区别",
+        prior_answer_target="C和C++有什么区别",
+        answer_language="zh",
+    ).model_copy(
+        update={
+            "search_queries": [
+                "C和C++的发展历史",
+                "C语言的发展历史",
+                "C++的发展历史",
+            ]
+        }
+    )
+    state = AgentGraphState(
+        run_id="graph",
+        query=understanding.standalone_query,
+        understanding=understanding,
+    )
+    context = make_context(tmp_path)
+    state = state.model_copy(update=runner._initialize(state, context))
+    state = state.model_copy(update=runner._plan(state, context))
+
+    runner._retrieve(state, context)
+
+    assert [
+        call.arguments["query"]
+        for call in executor.calls
+        if call.tool_name == "web_search"
+    ] == understanding.search_queries
+
+
+def test_body_admission_requires_all_resolved_subjects() -> None:
+    understanding = build_deterministic_understanding(
+        "它们的发展历史",
+        prior_subject="C和C++",
+        prior_query="C和C++有什么区别",
+        prior_answer_target="C和C++有什么区别",
+        answer_language="zh",
+    )
+
+    reason = GraphAgentRunner._evidence_rejection_reason(
+        "C和C++的发展历史",
+        "C和C++的发展历史",
+        "C 语言的历史可以追溯到 1970 年代。",
+        understanding=understanding,
+    )
+
+    assert reason == "missing_subject_coverage"
+
+
+def test_graph_trace_records_safe_query_understanding(tmp_path: Path) -> None:
+    executor = FakeExecutor(
+        lambda call: make_result(
+            call,
+            output={"hits": []}
+            if call.tool_name == "search_documents"
+            else {"path": "notes/graph.md", "char_count": 1},
+        )
+    )
+    understanding = build_deterministic_understanding(
+        "它们的发展历史",
+        prior_subject="C和C++",
+        prior_query="C和C++有什么区别",
+        prior_answer_target="C和C++有什么区别",
+        answer_language="zh",
+    ).model_copy(
+        update={
+            "decision_source": "deterministic_fallback",
+            "fallback_reason": "structured_output_invalid",
+        }
+    )
+
+    GraphAgentRunner(
+        RulePlanner(), StateSelector(), ExtractiveSummarizer(), executor
+    ).run("C和C++的发展历史", make_context(tmp_path), understanding=understanding)
+
+    assert any(
+        event.get("standalone_query") == "C和C++的发展历史"
+        and event.get("resolved_subject") == "C和C++"
+        and event.get("required_facets") == ["C", "C++", "history"]
+        and event.get("query_rewrite_decision_source") == "deterministic_fallback"
+        and event.get("query_rewrite_fallback_reason") == "structured_output_invalid"
+        for event in executor.events
+    )
+
+
+def test_replan_replaces_queries_with_subject_preserving_facet_query(
+    tmp_path: Path,
+) -> None:
+    runner = GraphAgentRunner(
+        WebRulePlanner(),
+        StateSelector(),
+        ExtractiveSummarizer(),
+        FakeExecutor(lambda call: make_result(call, output={"results": []})),
+    )
+    understanding = build_deterministic_understanding(
+        "今年的诺贝尔奖获得者有哪些",
+        prior_subject="",
+        prior_query="",
+        prior_answer_target="",
+        answer_language="zh",
+    )
+    state = AgentGraphState(
+        run_id="graph",
+        query=understanding.standalone_query,
+        understanding=understanding,
+        evidence_gaps=["missing_required_facet:winners"],
+    )
+    state = state.model_copy(update=runner._initialize(state, make_context(tmp_path)))
+
+    update = runner._replan(state, make_context(tmp_path))
+
+    assert update["replans"] == 1
+    assert update["understanding"].search_queries == [
+        "今年的诺贝尔奖获得者有哪些 获奖者 官方来源"
+    ]
+
+
+def test_insufficient_evidence_routes_to_single_replan_after_reads() -> None:
+    state = AgentGraphState(
+        run_id="graph",
+        query="question",
+        current_node=GraphNode.ASSESS_EVIDENCE,
+        candidates=[
+            {
+                "source_type": "web",
+                "locator": "https://example.test/source",
+                "title": "source",
+            }
+        ],
+        attempted_candidates=["https://example.test/source"],
+        evidence_status=EvidenceStatus.INSUFFICIENT,
+        max_replans=1,
+        replans=0,
+    )
+
+    assert GraphAgentRunner.route(state) is GraphNode.REPLAN
 
 
 def test_person_profile_requires_biographical_evidence_not_a_name_mention() -> None:

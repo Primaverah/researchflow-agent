@@ -17,6 +17,7 @@ from researchflow.agent.graph import (
     GraphNode,
 )
 from researchflow.agent.planner import RulePlanner
+from researchflow.agent.query_understanding import QueryUnderstanding
 from researchflow.agent.selector import StateSelector
 from researchflow.agent.summarizer import ExtractiveSummarizer
 from researchflow.domain import AgentStatus, PlanStepStatus
@@ -38,12 +39,14 @@ class LangGraphResearchRunner:
         selector: StateSelector,
         summarizer: ExtractiveSummarizer,
         executor: ToolExecutor,
-        max_steps: int = 10,
+        max_steps: int = 13,
         candidate_limit: int = 10,
         read_limit: int = 5,
         max_concurrency: int = 3,
         max_replans: int = 1,
         official_domains: tuple[str, ...] = (),
+        candidate_ranker=None,
+        body_reranker=None,
     ) -> None:
         self._legacy = GraphAgentRunner(
             planner,
@@ -56,6 +59,8 @@ class LangGraphResearchRunner:
             max_concurrency=max_concurrency,
             max_replans=max_replans,
             official_domains=official_domains,
+            candidate_ranker=candidate_ranker,
+            body_reranker=body_reranker,
         )
         self._max_steps = max_steps
         self._context: ToolContext | None = None
@@ -73,6 +78,7 @@ class LangGraphResearchRunner:
         thread_id: str,
         answer_target: str | None = None,
         answer_language: str = "",
+        understanding: QueryUnderstanding | None = None,
         event_sink: GraphEventSink | None = None,
     ) -> AgentGraphState:
         self._context = context
@@ -93,6 +99,7 @@ class LangGraphResearchRunner:
                     query=query,
                     answer_target=answer_target or query,
                     answer_language=answer_language,
+                    understanding=understanding,
                     read_limit=self._legacy._read_limit,
                     max_replans=self._legacy._max_replans,
                     max_steps=self._max_steps,
@@ -203,6 +210,7 @@ class LangGraphResearchRunner:
                 update={"end_reason": GraphEndReason.MAX_STEPS}
             )
             next_node = GraphNode.FINISH
+        self._legacy._record_graph(node, next_node, completed, self._context_or_raise())
         self._legacy._publish_node_events(
             self._event_sink, node, previous, completed, next_node
         )
@@ -277,8 +285,6 @@ class LangGraphResearchRunner:
                 if state.evidence_status is EvidenceStatus.SUFFICIENT
                 else GraphNode.READ_SOURCES
                 if self._legacy._has_read_budget(state)
-                else GraphNode.SYNTHESIZE
-                if state.candidates
                 else GraphNode.REPLAN
                 if state.replans < state.max_replans
                 else GraphNode.SYNTHESIZE
@@ -383,8 +389,6 @@ class LangGraphResearchRunner:
             return "synthesize"
         if self._legacy._has_read_budget(state):
             return "read_sources"
-        if state.candidates:
-            return "synthesize"
         if state.replans < state.max_replans:
             return "replan"
         return "synthesize"

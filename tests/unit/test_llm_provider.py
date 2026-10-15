@@ -63,6 +63,7 @@ def test_config_resolves_cli_over_environment_over_toml(
                 "planner_max_tokens": 100,
                 "selector_max_tokens": 200,
                 "summarizer_max_tokens": 300,
+                "rewriter_max_tokens": 350,
             }
         },
     )
@@ -82,6 +83,7 @@ def test_config_resolves_cli_over_environment_over_toml(
             "planner_max_tokens": 1024,
             "selector_max_tokens": 1024,
             "summarizer_max_tokens": 2048,
+            "rewriter_max_tokens": 400,
         }
     )
 
@@ -94,6 +96,7 @@ def test_config_resolves_cli_over_environment_over_toml(
     assert config.planner_max_tokens == 1024
     assert config.selector_max_tokens == 1024
     assert config.summarizer_max_tokens == 2048
+    assert config.rewriter_max_tokens == 400
 
 
 def test_provider_forwards_configured_request_settings() -> None:

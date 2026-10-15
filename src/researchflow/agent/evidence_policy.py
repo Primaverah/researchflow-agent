@@ -85,6 +85,8 @@ def build_retrieval_query(query: str, intent: FreshnessIntent) -> str:
     if intent.target_year is None or str(intent.target_year) in query:
         return query
     return f"{query} {intent.target_year}"
+
+
 _COMPLETE_LIST_TERMS = (
     "完整",
     "全部",

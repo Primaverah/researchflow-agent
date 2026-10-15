@@ -38,10 +38,11 @@ LLM 或联网；Web 与 LLM 都是显式启用、运行时配置的能力。
 
 ```text
 current_input
-  -> contextualizer + conversation_history
-  -> standalone_query / answer_target / answer_language
+  -> deterministic QueryUnderstanding + bounded conversation_history
+  -> conditional schema-validated LLM query rewriter (or deterministic fallback)
+  -> standalone_query / resolved_subject / intent / required_facets / 1–3 search_queries
   -> GraphAgentRunner
-  -> search candidates -> accepted full-text sources
+  -> bounded candidates -> subject/facet/freshness gates -> accepted full-text sources
   -> grounded summarizer -> Markdown report + JSONL traces
 ```
 
@@ -57,13 +58,15 @@ assess_evidence -> synthesize -> verify -> save -> finish`。无有效正文时�
 `run_id` checkpoint，并投射不含正文/凭据的应用事件，供 CLI/API/控制台使用。原有 JSONL
 保持逐工具调用的兼容格式；图节点生命周期保存在应用事件流而不是插入工具 JSONL。
 
-1. 规划器根据 `standalone_query` 生成本地搜索与（启用后）Web 搜索操作。
-2. 检索结果被稳定去重，最多保留 10 个候选。
+1. 会话层先生成 `QueryUnderstanding`；仅对代词、续问、主体缺失或时效歧义调用
+   `LLMQueryRewriter`。其输出受 schema 约束；主体、分面或年份丢失、超时或无效 JSON 时整体回退。
+2. 规划器根据结构化查询生成本地搜索与（启用后）Web 搜索操作。检索结果被稳定去重，最多保留 10 个候选。
 3. `fetch_url` 只能读取本轮成功搜索返回的候选；默认最多读取 5 个高优先级候选。
 4. 网页 HTML 会优先提取 `<article>`、`<main>`、`role=main` 与典型正文容器；链接密集的
    导航、页脚、广告和模板噪声不作为正文。只有菜单/模板文本的页面以
    `web_low_quality_content` 拒绝。
-5. 本地文档和成功抓取的网页正文均会经过相关性判断。标题出现主体名称本身不够；
+5. 候选读取前、正文读取后均会经过相关性判断。标题出现主体名称本身不够；双主体问题
+   要求所有主体覆盖，时效和所需分面也必须匹配。预读拒绝会以原因进入证据事件，不会伪装为已读来源；
    例如编译器问题需要 GCC、Clang、MSVC 或同类编译器证据，年龄问题需要出生信息，
    “某人是谁”需要主体加身份、职业、出生、国籍或代表作等传记证据。
 6. 只有成功读取且通过相关性检查的 `ReadDocumentOutput` / `WebSource` 进入总结器。
@@ -137,6 +140,8 @@ C和C++有什么区别  -> resolved_subject = C和C++
 
 `SessionResearchRequest` 是会话层与研究工作流的结构化边界。它传递当前输入、独立
 查询、回答目标、语言、历史、主体、意图与分面，避免下游只收到一个丢失语境的字符串。
+`QueryUnderstanding` 还保存本轮改写的 `decision_source` 与可公开的
+`fallback_reason`；这些字段会投射到图 Trace，不包含提示词、模型输出或网页正文。
 
 ## 6. 中断、恢复与一致性
 
@@ -165,14 +170,31 @@ traces/<run_id>.jsonl      # 每行一个工具调用/决策记录
 sessions/checkpoints.sqlite3  # 会话、研究图和应用运行状态
 ```
 
-JSONL 记录工具状态、耗时与 LLM 决策元数据；应用事件保存候选/拒绝原因、图节点与证据
-状态。大报告正文会被 redact，凭据和 HTTP 正文不进入 trace。Windows 控制台输出在目标编码无法表示字符时使用
-替代字符，文件仍保持 UTF-8，避免 `UnicodeEncodeError` 使命令失败。
+JSONL 记录工具状态、耗时与 LLM 决策元数据；图 Trace 还记录安全的
+`current_input`、主体、独立查询、意图、所需分面、生成的检索查询，以及改写的决策来源或
+回退原因。应用事件保存候选/拒绝原因、图节点与证据状态。大报告正文会被 redact，凭据和
+HTTP 正文不进入 trace。Windows 控制台输出在目标编码无法表示字符时使用替代字符，文件仍
+保持 UTF-8，避免 `UnicodeEncodeError` 使命令失败。
+
+### 网页候选与正文重排序
+
+启用 Web 时，搜索标题与摘要只用于候选排序：`CandidateRanker` 对最多 10 个安全候选
+计算临时 BM25 与可选 embedding 相似度，并用 RRF 融合；并列时保持输入顺序。模型或可选
+依赖不可用时回退为稳定 BM25 顺序。正文只有在 `fetch_url` 成功后才交给 `BodyReranker`：
+先做 embedding 排序，随后可选 Cross-Encoder 精排；LLM reranker 默认关闭，且仅在 Top-N
+分数接近时对已读正文、已知 source id 作 JSON 裁决。它们永远不能新增 URL 或把摘要变成
+证据。
+
+图事件和 evidence 面板可显示 rank、BM25/embedding/RRF/Cross-Encoder 等标量分数、排序
+理由与回退理由；不写入网页正文、prompt、原始模型输出或密钥。无论排序得分如何，主体、
+分面、年份、正文质量与 evidence policy 仍是不可绕过的硬门槛。
 
 ## 8. 当前限制与演进方向
 
 - 网页重定向当前安全拒绝，尚未实现逐跳校验和连接绑定。
-- 相关性规则已有意图特例，但尚未形成统一的可解释分数模型。
+- 网页候选已使用 BM25、可选 embedding/RRF 与可选正文重排序，但没有持久向量索引、真实
+  标注 benchmark、Cross-Encoder 默认启用策略或逐事实蕴含验证，因此边缘主题仍可能被过严
+  拒绝或需要额外来源。
 - `PARTIAL` 的按分面回答、逐条结论 source-id verifier 与完整会话诊断字段仍需继续完成。
 - 离线抽取器不会翻译英文原文；LLM 不可用或未遵守输出约束时，报告仍会标明来源而不能
   承诺把所有证据翻译成人类指定语言。

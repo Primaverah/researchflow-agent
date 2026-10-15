@@ -20,6 +20,7 @@ from researchflow.agent.evidence_policy import (
     evaluate_evidence_policy,
 )
 from researchflow.agent.planner import RulePlanner
+from researchflow.agent.query_understanding import QueryUnderstanding, subject_terms
 from researchflow.agent.selector import StateSelector
 from researchflow.agent.summarizer import ExtractiveSummarizer, SummaryGenerationStatus
 from researchflow.domain import (
@@ -32,6 +33,9 @@ from researchflow.domain import (
 )
 from researchflow.domain.models import DomainModel
 from researchflow.execution import ToolExecutor
+from researchflow.reranking.body import BodyReranker
+from researchflow.reranking.candidate import CandidateRanker
+from researchflow.reranking.models import RankingCandidate
 from researchflow.tools import ToolContext
 from researchflow.tools.offline import ReadDocumentOutput
 from researchflow.tools.web import WebSource
@@ -69,6 +73,9 @@ class GraphCandidate(DomainModel):
     locator: str
     title: str
     summary: str = ""
+    ranking_scores: dict[str, float] = Field(default_factory=dict)
+    ranking_reason: str = ""
+    ranking_fallback_reason: str | None = None
 
 
 class AgentGraphState(DomainModel):
@@ -101,6 +108,9 @@ class AgentGraphState(DomainModel):
     node_steps: int = 0
     max_steps: int = 10
     end_reason: GraphEndReason | None = None
+    understanding: QueryUnderstanding | None = None
+    candidate_ranking: list[dict[str, object]] = Field(default_factory=list)
+    body_ranking: list[dict[str, object]] = Field(default_factory=list)
 
 
 class AgentOrchestrator(Protocol):
@@ -123,12 +133,14 @@ class GraphAgentRunner:
         selector: StateSelector,
         summarizer: ExtractiveSummarizer,
         executor: ToolExecutor,
-        max_steps: int = 10,
+        max_steps: int = 13,
         candidate_limit: int = 10,
         read_limit: int = 5,
         max_concurrency: int = 3,
         max_replans: int = 1,
         official_domains: tuple[str, ...] = (),
+        candidate_ranker: CandidateRanker | None = None,
+        body_reranker: BodyReranker | None = None,
     ) -> None:
         if min(max_steps, candidate_limit, read_limit, max_concurrency) < 1:
             raise ValueError("graph limits must be positive")
@@ -144,6 +156,8 @@ class GraphAgentRunner:
         self._max_concurrency = max_concurrency
         self._max_replans = max_replans
         self._official_domains = official_domains
+        self._candidate_ranker = candidate_ranker
+        self._body_reranker = body_reranker
         self._call_count = 0
 
     def run(
@@ -153,6 +167,7 @@ class GraphAgentRunner:
         *,
         answer_target: str | None = None,
         answer_language: str = "",
+        understanding: QueryUnderstanding | None = None,
         event_sink: GraphEventSink | None = None,
     ) -> AgentState:
         state = AgentGraphState(
@@ -160,6 +175,7 @@ class GraphAgentRunner:
             query=query,
             answer_target=answer_target or query,
             answer_language=answer_language,
+            understanding=understanding,
             max_replans=self._max_replans,
             read_limit=self._read_limit,
             max_steps=self._max_steps,
@@ -206,8 +222,6 @@ class GraphAgentRunner:
                 return GraphNode.SYNTHESIZE
             if GraphAgentRunner._has_read_budget(state):
                 return GraphNode.READ_SOURCES
-            if state.candidates:
-                return GraphNode.SYNTHESIZE
             if state.replans < state.max_replans and state.end_reason is None:
                 return GraphNode.REPLAN
             return GraphNode.SYNTHESIZE
@@ -253,28 +267,23 @@ class GraphAgentRunner:
         return {"agent": agent}
 
     def _retrieve(self, state: AgentGraphState, context: ToolContext) -> dict[str, Any]:
+        queries = (
+            state.understanding.search_queries
+            if state.understanding is not None
+            else [
+                build_retrieval_query(
+                    state.query, classify_freshness_intent(state.query)
+                )
+            ]
+        )
         calls = [
-            (
-                "search_documents",
-                {
-                    "query": build_retrieval_query(
-                        state.query, classify_freshness_intent(state.query)
-                    ),
-                    "limit": self._candidate_limit,
-                },
-            )
+            ("search_documents", {"query": query, "limit": self._candidate_limit})
+            for query in queries
         ]
         if self._has_web_plan(state):
-            calls.append(
-                (
-                    "web_search",
-                    {
-                        "query": build_retrieval_query(
-                            state.query, classify_freshness_intent(state.query)
-                        ),
-                        "limit": self._candidate_limit,
-                    },
-                )
+            calls.extend(
+                ("web_search", {"query": query, "limit": self._candidate_limit})
+                for query in queries
             )
         outcomes = self._parallel_calls(state, context, calls)
         candidates: list[GraphCandidate] = []
@@ -284,9 +293,26 @@ class GraphAgentRunner:
                 candidates.extend(self._local_candidates(result.output))
             if result.success and call.tool_name == "web_search":
                 candidates.extend(self._web_candidates(result.output))
+        pre_read_rejections = [
+            f"{candidate.locator} — {reason}"
+            for candidate in candidates
+            if state.understanding is not None
+            and (
+                reason := self._candidate_rejection_reason(
+                    candidate, state.understanding
+                )
+            )
+            is not None
+        ]
+        deduplicated = self._deduplicate(candidates, state.query, state.understanding)
+        ranked_candidates, ranking_diagnostics = self._rank_web_candidates(
+            state.query, deduplicated
+        )
         return {
             "agent": self._agent(state),
-            "candidates": self._deduplicate(candidates, state.query),
+            "candidates": ranked_candidates,
+            "candidate_ranking": ranking_diagnostics,
+            "rejected_sources": [*state.rejected_sources, *pre_read_rejections],
         }
 
     def _assess_evidence(
@@ -298,6 +324,12 @@ class GraphAgentRunner:
             official_domains=self._official_domains,
         )
         unread_candidates = len(state.attempted_candidates) < len(state.candidates)
+        rejected_gaps = [
+            item.rpartition(" — ")[2]
+            for item in state.rejected_sources
+            if item.rpartition(" — ")[2].startswith("missing_required_facet:")
+        ]
+        gaps = list(dict.fromkeys([*assessment.gaps, *rejected_gaps]))
         if assessment.sufficient:
             status = EvidenceStatus.SUFFICIENT
         elif state.documents or state.web_sources or unread_candidates:
@@ -306,7 +338,7 @@ class GraphAgentRunner:
             status = EvidenceStatus.INSUFFICIENT
         return {
             "evidence_status": status,
-            "evidence_gaps": list(assessment.gaps),
+            "evidence_gaps": gaps,
             "evidence_policy": assessment.policy.name,
             "accepted_source_count": assessment.accepted_source_count,
             "required_source_count": assessment.required_source_count,
@@ -318,7 +350,37 @@ class GraphAgentRunner:
         agent = self._agent(state)
         agent.plan = self._planner.create_plan(state.query)
         self._record_decision(agent, self._planner, context)
-        return {"agent": agent, "replans": state.replans + 1}
+        understanding = state.understanding
+        if understanding is None:
+            return {"agent": agent, "replans": state.replans + 1}
+        facets = [
+            gap.removeprefix("missing_required_facet:")
+            for gap in state.evidence_gaps
+            if gap.startswith("missing_required_facet:")
+        ]
+        labels = {
+            "winners": "获奖者",
+            "nobel_prize": "诺贝尔奖",
+            "common_compilers": "编译器",
+            "representative_works": "代表作",
+            "birth_date": "出生日期",
+            "age": "年龄",
+            "latest_update": "最新更新",
+            "history": "发展历史",
+        }
+        suffix = " ".join(labels.get(facet, facet) for facet in facets[:2])
+        query = " ".join(
+            part
+            for part in (understanding.standalone_query, suffix, "官方来源")
+            if part
+        )
+        refined = understanding.model_copy(update={"search_queries": [query]})
+        return {
+            "agent": agent,
+            "replans": state.replans + 1,
+            "understanding": refined,
+            "replan_reason": "targeted_facet_retry",
+        }
 
     def _read_sources(
         self, state: AgentGraphState, context: ToolContext
@@ -358,7 +420,10 @@ class GraphAgentRunner:
             if call.tool_name == "read_document":
                 document = ReadDocumentOutput.model_validate(result.output)
                 rejection = self._evidence_rejection_reason(
-                    state.query, document.title, document.content
+                    state.query,
+                    document.title,
+                    document.content,
+                    understanding=state.understanding,
                 )
                 if rejection is None:
                     documents.append(document)
@@ -367,17 +432,45 @@ class GraphAgentRunner:
             else:
                 source = WebSource.model_validate(result.output)
                 rejection = self._evidence_rejection_reason(
-                    state.query, source.title, source.content
+                    state.query,
+                    source.title,
+                    source.content,
+                    understanding=state.understanding,
                 )
                 if rejection is None:
                     web_sources.append(source)
                 else:
                     rejected.append(f"{source.url} — {rejection}")
+        if self._body_reranker is not None and web_sources:
+            ranking = self._body_reranker.rank(state.query, web_sources)
+            by_url = {source.url: source for source in web_sources}
+            web_sources = [
+                by_url[source_id]
+                for source_id in ranking.accepted_source_ids
+                if source_id in by_url
+            ]
+            rejected.extend(
+                f"{source_id} — {reason}"
+                for source_id, reason in ranking.rejected_reasons.items()
+            )
+            body_ranking = [
+                {
+                    "source_id": record.source_id,
+                    "rank_position": record.position,
+                    "scores": dict(record.scores),
+                    "ranking_reason": record.reason,
+                    "ranking_fallback_reason": record.fallback_reason,
+                }
+                for record in ranking.records
+            ]
+        else:
+            body_ranking = state.body_ranking
         return {
             "agent": self._agent(state),
             "documents": documents,
             "web_sources": web_sources,
             "rejected_sources": rejected,
+            "body_ranking": body_ranking,
             "attempted_candidates": [
                 *state.attempted_candidates,
                 *(candidate.locator for candidate in unread),
@@ -542,8 +635,28 @@ class GraphAgentRunner:
         )
 
     @staticmethod
-    def _evidence_rejection_reason(query: str, title: str, content: str) -> str | None:
+    def _evidence_rejection_reason(
+        query: str,
+        title: str,
+        content: str,
+        *,
+        understanding: QueryUnderstanding | None = None,
+    ) -> str | None:
         text = f"{title}\n{content}".casefold()
+        if understanding is not None:
+            if any(
+                subject.casefold() not in content.casefold()
+                for subject in subject_terms(understanding.resolved_subject)
+            ):
+                return "missing_subject_coverage"
+            facet_reason = GraphAgentRunner._candidate_rejection_reason(
+                GraphCandidate(
+                    source_type="body", locator="body", title=title, summary=content
+                ),
+                understanding,
+            )
+            if facet_reason is not None:
+                return facet_reason
         intent = classify_freshness_intent(query)
         if (
             intent.requires_current_evidence
@@ -629,22 +742,108 @@ class GraphAgentRunner:
         ]
 
     def _deduplicate(
-        self, candidates: list[GraphCandidate], query: str = ""
+        self,
+        candidates: list[GraphCandidate],
+        query: str = "",
+        understanding: QueryUnderstanding | None = None,
     ) -> list[GraphCandidate]:
         unique: dict[tuple[str, str], GraphCandidate] = {}
         for candidate in candidates:
             unique.setdefault((candidate.source_type, candidate.locator), candidate)
         ordered = list(unique.values())
+        if understanding is not None:
+            ordered = [
+                candidate
+                for candidate in ordered
+                if self._candidate_rejection_reason(candidate, understanding) is None
+            ]
         intent = classify_freshness_intent(query) if query else None
         if intent is not None and intent.target_year is not None:
             year = str(intent.target_year)
             ordered = sorted(
                 ordered,
-                key=lambda candidate: 0
-                if year in f"{candidate.title}\n{candidate.summary}"
-                else 1,
+                key=lambda candidate: (
+                    0 if year in f"{candidate.title}\n{candidate.summary}" else 1
+                ),
             )
         return ordered[: self._candidate_limit]
+
+    def _rank_web_candidates(
+        self, query: str, candidates: list[GraphCandidate]
+    ) -> tuple[list[GraphCandidate], list[dict[str, object]]]:
+        if self._candidate_ranker is None:
+            return candidates, []
+        web = [candidate for candidate in candidates if candidate.source_type == "web"]
+        if not web:
+            return candidates, []
+        ranking = self._candidate_ranker.rank(
+            query,
+            [
+                RankingCandidate(
+                    source_id=candidate.locator,
+                    title=candidate.title,
+                    summary=candidate.summary,
+                    input_position=index,
+                )
+                for index, candidate in enumerate(web)
+            ],
+        )
+        by_locator = {candidate.locator: candidate for candidate in web}
+        records = {record.source_id: record for record in ranking.records}
+        ranked_web = [
+            by_locator[source_id].model_copy(
+                update={
+                    "ranking_scores": dict(records[source_id].scores),
+                    "ranking_reason": records[source_id].reason,
+                    "ranking_fallback_reason": records[source_id].fallback_reason,
+                }
+            )
+            for source_id in ranking.source_ids
+            if source_id in by_locator
+        ]
+        local = [
+            candidate for candidate in candidates if candidate.source_type != "web"
+        ]
+        diagnostics = [
+            {
+                "source_id": record.source_id,
+                "rank_position": record.position,
+                "scores": dict(record.scores),
+                "ranking_reason": record.reason,
+                "ranking_fallback_reason": record.fallback_reason,
+            }
+            for record in ranking.records
+        ]
+        return [*local, *ranked_web][: self._candidate_limit], diagnostics
+
+    @staticmethod
+    def _candidate_rejection_reason(
+        candidate: GraphCandidate, understanding: QueryUnderstanding
+    ) -> str | None:
+        text = f"{candidate.title}\n{candidate.summary}".casefold()
+        required_subjects = subject_terms(understanding.resolved_subject)
+        if any(subject.casefold() not in text for subject in required_subjects):
+            return "missing_subject_coverage"
+        if understanding.freshness.target_year is not None and (
+            understanding.freshness.requires_current_evidence
+            and str(understanding.freshness.target_year) not in text
+        ):
+            return "stale_for_current_query"
+        facet_signals = {
+            "nobel_prize": ("诺贝尔", "nobel"),
+            "winners": ("获奖者", "获奖名单", "获奖", "winner", "laureate"),
+            "history": ("历史", "history"),
+            "common_compilers": ("编译器", "compiler", "gcc", "clang", "msvc"),
+            "representative_works": ("代表作", "作品", "电影", "film", "work"),
+            "birth_date": ("出生", "生于", "born"),
+            "age": ("年龄", "岁", "age", "years old"),
+            "latest_update": ("更新", "update", "version", "版本"),
+        }
+        for facet in understanding.required_facets:
+            signals = facet_signals.get(facet)
+            if signals is not None and not any(signal in text for signal in signals):
+                return f"missing_required_facet:{facet}"
+        return None
 
     @staticmethod
     def _has_web_plan(state: AgentGraphState) -> bool:
@@ -689,6 +888,7 @@ class GraphAgentRunner:
     ) -> None:
         record = getattr(self._executor, "record_graph", None)
         if callable(record):
+            understanding = state.understanding
             record(
                 {
                     "node": node.value,
@@ -704,6 +904,44 @@ class GraphAgentRunner:
                     "generation_mode": state.generation_mode,
                     "generation_fallback_reason": state.generation_fallback_reason,
                     "generation_error_type": state.generation_error_type,
+                    "current_input": (
+                        understanding.current_input
+                        if understanding is not None
+                        else state.query
+                    ),
+                    "resolved_subject": (
+                        understanding.resolved_subject
+                        if understanding is not None
+                        else ""
+                    ),
+                    "standalone_query": (
+                        understanding.standalone_query
+                        if understanding is not None
+                        else state.query
+                    ),
+                    "intent": understanding.intent if understanding is not None else "",
+                    "required_facets": (
+                        understanding.required_facets
+                        if understanding is not None
+                        else []
+                    ),
+                    "generated_search_queries": (
+                        understanding.search_queries
+                        if understanding is not None
+                        else [state.query]
+                    ),
+                    "query_rewrite_decision_source": (
+                        understanding.decision_source
+                        if understanding is not None
+                        else ""
+                    ),
+                    "query_rewrite_fallback_reason": (
+                        understanding.fallback_reason
+                        if understanding is not None
+                        else ""
+                    ),
+                    "candidate_ranking": state.candidate_ranking,
+                    "body_ranking": state.body_ranking,
                 },
                 context,
             )
@@ -747,6 +985,36 @@ class GraphAgentRunner:
                         "source_id": candidate.locator,
                         "title": candidate.title,
                         "kind": candidate.source_type,
+                        "ranking_scores": candidate.ranking_scores,
+                        "ranking_reason": candidate.ranking_reason,
+                        "ranking_fallback_reason": candidate.ranking_fallback_reason,
+                    },
+                )
+            for record in state.candidate_ranking:
+                scores = record.get("scores")
+                self._emit(
+                    event_sink,
+                    "candidate_reranked",
+                    {
+                        "source_id": record.get("source_id"),
+                        "rank_position": record.get("rank_position"),
+                        "rrf_score": scores.get("rrf")
+                        if isinstance(scores, dict)
+                        else None,
+                        "ranking_reason": record.get("ranking_reason"),
+                        "ranking_fallback_reason": record.get(
+                            "ranking_fallback_reason"
+                        ),
+                    },
+                )
+            for rejected in state.rejected_sources[len(previous.rejected_sources) :]:
+                source_id, separator, reason = rejected.rpartition(" — ")
+                self._emit(
+                    event_sink,
+                    "source_rejected",
+                    {
+                        "source_id": source_id if separator else rejected,
+                        "reason": reason if separator else "rejected",
                     },
                 )
         if node is GraphNode.READ_SOURCES:
@@ -762,6 +1030,14 @@ class GraphAgentRunner:
                     },
                 )
             for source in state.web_sources[len(previous.web_sources) :]:
+                ranking = next(
+                    (
+                        item
+                        for item in state.body_ranking
+                        if item.get("source_id") == source.url
+                    ),
+                    {},
+                )
                 self._emit(
                     event_sink,
                     "source_read",
@@ -770,6 +1046,11 @@ class GraphAgentRunner:
                         "title": source.title,
                         "kind": "web",
                         "content_length": len(source.content),
+                        "ranking_scores": ranking.get("scores", {}),
+                        "ranking_reason": ranking.get("ranking_reason", ""),
+                        "ranking_fallback_reason": ranking.get(
+                            "ranking_fallback_reason"
+                        ),
                     },
                 )
             for rejected in state.rejected_sources[len(previous.rejected_sources) :]:

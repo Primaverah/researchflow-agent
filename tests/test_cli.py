@@ -29,6 +29,13 @@ class FakeCheckProvider(BaseLLMProvider):
         self._responses = iter(
             [
                 {
+                    "resolved_subject": "C和C++",
+                    "standalone_query": "C和C++的发展历史",
+                    "intent": "history",
+                    "required_facets": ["C", "C++", "history"],
+                    "search_queries": ["C和C++的发展历史"],
+                },
+                {
                     "steps": [
                         {
                             "step_id": "search",
@@ -212,13 +219,14 @@ def test_llm_check_uses_structured_fake_provider(
     result = runner.invoke(app, ["llm-check"])
 
     assert result.exit_code == 0
+    assert "query_rewriter: success=True" in result.stdout
     assert "planner: success=True" in result.stdout
     assert "selector: success=True" in result.stdout
     assert "summarizer: success=True" in result.stdout
     assert "success=True" in result.stdout
     assert "fallback=False" in result.stdout
     assert "finish_reason=stop" in result.stdout
-    assert "llm-check-source.md" in provider.requests[2].user_prompt
+    assert "llm-check-source.md" in provider.requests[3].user_prompt
 
 
 def test_cli_loads_local_llm_configuration_before_llm_check(
@@ -408,8 +416,9 @@ def test_direct_mode_displays_run_sections_and_real_paths(cli_paths) -> None:
     assert f"报告: {note.resolve()}" in result.stdout
     assert f"Trace: {trace.resolve()}" in result.stdout
     tool_names = [
-        json.loads(line)["tool_name"]
+        payload["tool_name"]
         for line in trace.read_text(encoding="utf-8").splitlines()
+        if "tool_name" in (payload := json.loads(line))
     ]
     assert tool_names == [
         "search_documents",

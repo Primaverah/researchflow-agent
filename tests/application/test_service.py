@@ -116,6 +116,30 @@ def test_published_evidence_events_update_persisted_run_snapshot(tmp_path) -> No
     assert service.get_run(snapshot.run_id) == updated
 
 
+def test_session_research_result_preserves_safe_reranking_diagnostics() -> None:
+    result = SessionResearchResult.from_events(
+        "answer",
+        [
+            (
+                "candidate_selected",
+                {
+                    "source_id": "https://example.test/source",
+                    "title": "候选来源",
+                    "kind": "web",
+                    "ranking_scores": {"rrf": 0.0328, "bm25": 1.0},
+                    "ranking_reason": "hybrid_rrf",
+                    "ranking_fallback_reason": "embedding_unavailable",
+                },
+            )
+        ],
+    )
+
+    source = result.candidates[0]
+    assert source.ranking_scores == {"rrf": 0.0328, "bm25": 1.0}
+    assert source.ranking_reason == "hybrid_rrf"
+    assert source.ranking_fallback_reason == "embedding_unavailable"
+
+
 def test_event_aware_workflow_projects_evidence_while_it_runs(tmp_path) -> None:
     def workflow(message: str, _session_id: str, publish) -> AgentState:
         publish(
